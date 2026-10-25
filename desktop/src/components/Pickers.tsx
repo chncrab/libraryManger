@@ -32,15 +32,19 @@ export function SinglePick({
   value,
   onCommit,
   placeholder = "未选择",
-  title
+  title,
+  autoOpen = false,
+  onDismiss
 }: {
   options: string[];
   value: string | null;
   onCommit: (v: string) => void;
   placeholder?: string;
   title?: string;
+  autoOpen?: boolean;
+  onDismiss?: () => void;
 }) {
-  const { open, setOpen, box } = usePopover();
+  const { open, setOpen, box } = usePopover(autoOpen, onDismiss);
   return (
     <div className="mp" ref={box}>
       <div className="mp-show" onClick={() => setOpen(!open)} title={title || "点开选择"}>
