@@ -107,30 +107,30 @@ check("表格视图有行", rows > 0, "行数 " + rows);
 
 // 4b 表格单击就地编辑：点评分格变成输入框，改成 9.9 后落库
 const cellOpen = await js(`(() => {
-  const td = document.querySelectorAll('.table tbody tr')[0].children[5];
-  const s = td.querySelector('.tc');
+  const td = document.querySelector('.table tbody tr td[data-col=rating]');
+  const s = td && td.querySelector('.tc');
   if (!s) return false;
   s.click();
   return true;
 })()`);
 await wait(250);
-const cellIsInput = await js("!!document.querySelectorAll('.table tbody tr')[0].children[5].querySelector('.tc-in')");
+const cellIsInput = await js("!!document.querySelector('.table tbody tr td[data-col=rating] .tc-in')");
 await js(`(() => {
-  const i = document.querySelectorAll('.table tbody tr')[0].children[5].querySelector('.tc-in');
+  const i = document.querySelector('.table tbody tr td[data-col=rating] .tc-in');
   const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
   set.call(i, '9.9');
   i.dispatchEvent(new Event('input', { bubbles: true }));
   i.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
 })()`);
 await wait(1300);
-const cellVal = await js("document.querySelectorAll('.table tbody tr')[0].children[5].textContent.trim()");
+const cellVal = await js("document.querySelector('.table tbody tr td[data-col=rating]').textContent.trim()");
 check("表格单击单元格可编辑", cellOpen && cellIsInput && cellVal === "9.9", "输入框 " + cellIsInput + "，值 " + cellVal);
 
 // 4c 表格里已读格点一下就能切换
-const readBefore = await js("document.querySelectorAll('.table tbody tr')[0].children[6].textContent.trim()");
-await js("document.querySelectorAll('.table tbody tr')[0].children[6].querySelector('.tc').click()");
+const readBefore = await js("document.querySelector('.table tbody tr td[data-col=read]').textContent.trim()");
+await js("document.querySelector('.table tbody tr td[data-col=read] .tc').click()");
 await wait(1200);
-const readAfter = await js("document.querySelectorAll('.table tbody tr')[0].children[6].textContent.trim()");
+const readAfter = await js("document.querySelector('.table tbody tr td[data-col=read]').textContent.trim()");
 check("表格里点一下就切已读", readBefore !== readAfter, "'" + readBefore + "' → '" + readAfter + "'");
 
 // 5 详情是抽屉：点书评图标打开，点遮罩关闭
@@ -139,6 +139,30 @@ await wait(700);
 const detailTitle = await js("(document.querySelector('.drawer .dh h2')||{}).textContent||''");
 const drawerOn = await js("document.querySelector('.drawer').classList.contains('on')");
 check("详情从右侧抽屉弹出", drawerOn && detailTitle.length > 1, detailTitle.trim().slice(0, 20));
+
+// 5a 表格列与详情字段一一对应：详情里能改的条目表格里都得有，备注是长文本留在详情里
+const detailLabels = await js(`(() => {
+  const top = [...document.querySelectorAll('.drawer .dfields label')].map(e => e.textContent.trim());
+  const kv = [...document.querySelectorAll('.drawer .kv > div > span:first-child')].map(e => e.textContent.trim());
+  return [...top, ...kv].filter(Boolean);
+})()`);
+const headTexts = await js("[...document.querySelectorAll('.table thead th')].map(e => (e.textContent || '').trim())");
+/* 详情里一行放两个条目的，表格拆成两列 */
+const PAIR = { 系列: ["系列", "卷"], 已读: ["已读", "阅读日期"] };
+const headSet = new Set(headTexts.filter(Boolean));
+const detailSet = new Set(detailLabels.filter((l) => l !== "备注"));
+const pairMembers = new Set(Object.values(PAIR).flat());
+const missInTable = detailLabels.filter(
+  (l) => l !== "备注" && !(PAIR[l] ? PAIR[l].every((x) => headSet.has(x)) : headSet.has(l))
+);
+const missInDetail = headTexts.filter((h) => h && h !== "书评" && !detailSet.has(h) && !pairMembers.has(h));
+check(
+  "表格列与详情字段一一对应（备注除外）",
+  missInTable.length === 0 && missInDetail.length === 0,
+  "详情 " + detailLabels.length + " 项，表头 " + headTexts.length + " 列" +
+    (missInTable.length ? "，表格缺 " + missInTable.join("、") : "") +
+    (missInDetail.length ? "，详情缺 " + missInDetail.join("、") : "")
+);
 
 // 5b 详情里的下拉统一成同一套，关闭是叉号，评分范围 0 到 10
 const pickShown = await js("document.querySelectorAll('.drawer .kv .mp-show').length");
