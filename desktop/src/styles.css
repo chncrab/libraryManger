@@ -151,7 +151,7 @@ button, input, select { font-family: inherit; }
 }
 .chip.on { border-color: var(--acc); color: var(--acc2); }
 
-.scroll { flex: 1; overflow-y: auto; padding: 14px; }
+.scroll { flex: 1; overflow-y: auto; overflow-x: auto; padding: 14px; }
 
 /* 书架 */
 .grid {
@@ -191,7 +191,8 @@ button, input, select { font-family: inherit; }
 .card .grade { float: right; color: var(--acc2); font-size: 11px; }
 
 /* 表格 */
-.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+/* 列多，窗口窄时横向滚动，各列不被挤成一条缝 */
+.table { width: 100%; min-width: 1500px; border-collapse: collapse; font-size: 12px; }
 .table th {
   position: sticky;
   top: -14px;

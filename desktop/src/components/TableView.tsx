@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { cloneElement, useState, type ReactElement } from "react";
 import type { BookPatch, BookRow } from "../../shared/types";
 import { gradeIcon } from "./GridView";
-import { MultiPick, type PickItem } from "./Pickers";
+import { MultiPick, SinglePick, type PickItem } from "./Pickers";
 import { COLUMNS } from "../columns";
+
+const MEDIA = ["小说", "漫画"];
+const EBOOK = ["有", "无"];
 
 interface Props {
   rows: BookRow[];
@@ -93,6 +96,43 @@ function MultiCell({
   );
 }
 
+/* 单选格：详情页那颗下拉，选完收起 */
+function SingleCell({
+  options,
+  value,
+  placeholder,
+  onCommit
+}: {
+  options: string[];
+  value: string | null;
+  placeholder?: string;
+  onCommit: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  if (!editing) {
+    return (
+      <span className={"tc" + (value ? "" : " dim")} onClick={() => setEditing(true)}>
+        {value || "—"}
+      </span>
+    );
+  }
+  return (
+    <div className="tc-mp">
+      <SinglePick
+        options={options}
+        value={value}
+        placeholder={placeholder}
+        autoOpen
+        onCommit={(v) => {
+          onCommit(v);
+          setEditing(false);
+        }}
+        onDismiss={() => setEditing(false)}
+      />
+    </div>
+  );
+}
+
 const today = () => {
   const d = new Date();
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -117,6 +157,28 @@ export default function TableView({ rows, selected, cats, states, hidden, onSele
         return (
           <td className="title">
             <TextCell value={b.title} onCommit={(v) => v.trim() && onPatch(b.id, { title: v.trim() })} />
+          </td>
+        );
+      case "subtitle":
+        return (
+          <td>
+            <TextCell value={b.subtitle} placeholder="中文副标题" onCommit={(v) => onPatch(b.id, { subtitle: v })} />
+          </td>
+        );
+      case "originalTitle":
+        return (
+          <td>
+            <TextCell value={b.originalTitle} onCommit={(v) => onPatch(b.id, { originalTitle: v })} />
+          </td>
+        );
+      case "originalSubtitle":
+        return (
+          <td>
+            <TextCell
+              value={b.originalSubtitle}
+              placeholder="原文副标题"
+              onCommit={(v) => onPatch(b.id, { originalSubtitle: v })}
+            />
           </td>
         );
       case "authors":
@@ -176,15 +238,26 @@ export default function TableView({ rows, selected, cats, states, hidden, onSele
             </span>
           </td>
         );
-      case "year":
+      case "country":
+        return (
+          <td>
+            <TextCell value={b.country} placeholder="日本" onCommit={(v) => onPatch(b.id, { country: v.trim() })} />
+          </td>
+        );
+      case "publishDate":
         return (
           <td>
             <TextCell
-              value={b.publishYear == null ? "" : String(b.publishYear)}
-              numeric
-              placeholder="年份"
-              onCommit={(v) => onPatch(b.id, { publishDate: v.trim() ? v.trim() + "-01-01" : "" })}
+              value={b.publishDate}
+              placeholder="YYYY-MM-DD"
+              onCommit={(v) => onPatch(b.id, { publishDate: v.trim() })}
             />
+          </td>
+        );
+      case "readDate":
+        return (
+          <td>
+            <TextCell value={b.readDate} placeholder="YYYY-MM-DD" onCommit={(v) => onPatch(b.id, { readDate: v.trim() })} />
           </td>
         );
       case "categories":
@@ -206,7 +279,18 @@ export default function TableView({ rows, selected, cats, states, hidden, onSele
       case "media":
         return (
           <td>
-            <span className="dim">{b.mediaType}</span>
+            <SingleCell options={MEDIA} value={b.mediaType} placeholder="小说" onCommit={(v) => onPatch(b.id, { mediaType: v })} />
+          </td>
+        );
+      case "ebook":
+        return (
+          <td>
+            <SingleCell
+              options={EBOOK}
+              value={b.ebookState || null}
+              placeholder="无"
+              onCommit={(v) => onPatch(b.id, { ebookState: v })}
+            />
           </td>
         );
       case "more":
@@ -234,7 +318,12 @@ export default function TableView({ rows, selected, cats, states, hidden, onSele
       <thead>
         <tr>
           {cols.map((c) => (
-            <th key={c.key} style={c.width ? { width: c.width } : undefined} title={c.key === "grade" ? "点图标进详情" : undefined}>
+            <th
+              key={c.key}
+              data-col={c.key}
+              style={c.width ? { width: c.width } : undefined}
+              title={c.key === "grade" ? "点图标进详情" : undefined}
+            >
               {c.label}
             </th>
           ))}
@@ -243,17 +332,13 @@ export default function TableView({ rows, selected, cats, states, hidden, onSele
       <tbody>
         {rows.map((b) => (
           <tr key={b.id} className={selected.includes(b.id) ? "on" : ""} onContextMenu={(e) => onCtx(e, b)}>
-            {cols.map((c) => (
-              <FragmentCell key={c.key}>{cell(c.key, b)}</FragmentCell>
-            ))}
+            {cols.map((c) =>
+              /* 每格补上列名，测试与脚本按列名取格子，不靠第几个孩子 */
+              cloneElement(cell(c.key, b) as ReactElement, { key: c.key, "data-col": c.key })
+            )}
           </tr>
         ))}
       </tbody>
     </table>
   );
-}
-
-/* 上面 cell 返回的是带 key 的 td，外面不能再裹一层，直接原样渲染 */
-function FragmentCell({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
 }
