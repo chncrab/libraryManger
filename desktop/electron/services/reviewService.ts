@@ -46,6 +46,7 @@ export function listReviews(db: DB): ReviewRow[] {
       `SELECT id, NULL AS bookId, NULL AS seriesId, grade, md, file_name AS fileName,
               COALESCE(happened_at, updated_at) AS happenedAt,
               updated_at AS updatedAt,
+              name, title_guess,
               CASE WHEN title_guess <> '' THEN title_guess ELSE name END AS title
          FROM orphan_reviews WHERE deleted_at IS NULL
         ORDER BY happenedAt DESC`
@@ -128,9 +129,14 @@ export function createReview(db: DB, p: ReviewInput): RvResult {
   return { ok: true, id: Number(info.lastInsertRowid) };
 }
 
-export function updateReview(db: DB, id: number, p: ReviewPatch): RvResult {
-  const cur = db.prepare("SELECT * FROM reviews WHERE id = ? AND deleted_at IS NULL").get(id) as any;
-  if (!cur) return { ok: false, msg: "这篇书评不在库里" };
+/**
+ * 改正文、评分、日期。未匹配书评在另一张表里，id 与 reviews 各从 1 起，
+ * 不分表就按 id 写会把正文写到另一本书的书评上，所以 kind 必须由调用方交代清楚。
+ */
+export function updateReview(db: DB, kind: string, id: number, p: ReviewPatch): RvResult {
+  const table = kind === "orphan" ? "orphan_reviews" : "reviews";
+  const cur = db.prepare(`SELECT * FROM ${table} WHERE id = ? AND deleted_at IS NULL`).get(id) as any;
+  if (!cur) return { ok: false, msg: kind === "orphan" ? "这条未匹配书评不在库里" : "这篇书评不在库里" };
   const sets: string[] = [];
   const vals: any[] = [];
   if (p.md !== undefined) (sets.push("md = ?"), vals.push(String(p.md)));
@@ -140,13 +146,24 @@ export function updateReview(db: DB, id: number, p: ReviewPatch): RvResult {
   if (!sets.length) return { ok: true, id };
   sets.push("updated_at = ?");
   vals.push(now());
-  db.prepare(`UPDATE reviews SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
+  db.prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   return { ok: true, id };
 }
 
 export function deleteReview(db: DB, id: number): RvResult {
   const info = db.prepare("UPDATE reviews SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now(), now(), id);
   return info.changes ? { ok: true, id } : { ok: false, msg: "这篇书评不在库里" };
+}
+
+/**
+ * 删未匹配书评。它和 reviews 是两张表，id 各从 1 起，
+ * 拿同一套删除接口按 id 硬删会删到另一篇不相干的书评，所以单独开一个。
+ */
+export function deleteOrphan(db: DB, id: number): RvResult {
+  const info = db
+    .prepare("UPDATE orphan_reviews SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+    .run(now(), now(), id);
+  return info.changes ? { ok: true, id } : { ok: false, msg: "这条未匹配书评不在库里" };
 }
 
 /** 未匹配的关联到某本书：正文搬进 reviews，原来那条打上删除标记，不做两份 */
