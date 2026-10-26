@@ -13,6 +13,7 @@ import {
   createReview,
   updateReview,
   deleteReview,
+  deleteOrphan,
   associateOrphan,
   associateOrphanToSeries,
   moveReview,
@@ -24,7 +25,16 @@ import { listSeries, seriesBooks, seriesReviewOf } from "./services/seriesServic
 import { setCoverFromFile, resetCover } from "./services/coverService";
 import { getSetting, setSetting } from "./services/settingsService";
 import { autoBackup, backupTo, listBackups } from "./services/backupService";
-import { importReviewTexts, exportAll, syncDir, readMdDir, writeOne, forgetFile, dropMapping } from "./services/reviewIo";
+import {
+  importReviewTexts,
+  exportAll,
+  syncDir,
+  readMdDir,
+  writeOne,
+  forgetFile,
+  dropMapping,
+  normalizeNames
+} from "./services/reviewIo";
 import {
   pathsOf,
   ensureStructure,
@@ -114,7 +124,7 @@ function openLibrary(root: string): { ok: boolean; msg?: string; root?: string; 
   if (oldDir && path.resolve(oldDir) !== path.resolve(p.reviewDir) && fs.existsSync(oldDir)) {
     const files = readMdDir(oldDir);
     if (files.length) {
-      const got = importReviewTexts(conn, files);
+      const got = importReviewTexts(conn, files, { dir: p.reviewDir });
       console.log(`[library] 从旧同步目录收进 ${got.added + got.updated + got.orphan} 篇书评`);
     }
     setSetting(conn, "review_dir", "");
@@ -421,15 +431,25 @@ function registerIpc(): void {
     if (r.ok && r.id) pushReview(p.bookId ? "book" : p.seriesId ? "series" : "draft", r.id);
     return r;
   });
-  ipcMain.handle("reviews:update", (_e, id: number, p: ReviewPatch) => {
-    const r = updateReview(D(), id, p || {});
-    if (r.ok) {
-      const row = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
-      if (row) pushReview(row.book_id ? "book" : row.series_id ? "series" : "draft", id);
+  ipcMain.handle("reviews:update", (_e, kind: string, id: number, p: ReviewPatch) => {
+    const r = updateReview(D(), kind, id, p || {});
+    if (!r.ok) return r;
+    if (kind === "orphan") {
+      writeOne(D(), reviewDir(), "orphan", id);
+      return r;
     }
+    const row = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
+    if (row) pushReview(row.book_id ? "book" : row.series_id ? "series" : "draft", id);
     return r;
   });
-  ipcMain.handle("reviews:delete", (_e, id: number) => {
+  /* 未匹配书评存在另一张表里，id 与 reviews 各从 1 起，按 id 硬删会删到别的书评，
+     所以 kind 必须由界面带上来 */
+  ipcMain.handle("reviews:delete", (_e, kind: string, id: number) => {
+    if (kind === "orphan") {
+      const o = deleteOrphan(D(), id);
+      if (o.ok) forgetFile(D(), reviewDir(), "orphan", id);
+      return o;
+    }
     const row = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
     const r = deleteReview(D(), id);
     if (r.ok && row) forgetFile(D(), reviewDir(), row.book_id ? "book" : row.series_id ? "series" : "draft", id);
@@ -504,7 +524,7 @@ function registerIpc(): void {
     });
     if (r.canceled || !r.filePaths.length) return null;
     const files = r.filePaths.map((p) => ({ name: path.basename(p), text: fs.readFileSync(p, "utf8") }));
-    return importReviewTexts(D(), files);
+    return importReviewTexts(D(), files, { dir: reviewDir() });
   });
   ipcMain.handle("reviews:importFolder", async () => {
     const r = await dialog.showOpenDialog(win!, {
@@ -512,7 +532,7 @@ function registerIpc(): void {
       properties: ["openDirectory"]
     });
     if (r.canceled || !r.filePaths[0]) return null;
-    return importReviewTexts(D(), readMdDir(r.filePaths[0]));
+    return importReviewTexts(D(), readMdDir(r.filePaths[0]), { dir: reviewDir() });
   });
   /* 导出到书库以外的地方，当一份可读的备份 */
   ipcMain.handle("reviews:export", async () => {
@@ -540,6 +560,16 @@ function registerIpc(): void {
       return syncDir(db, lib.reviewDir);
     } catch (e) {
       console.error("[review] 同步失败", e);
+      return null;
+    }
+  });
+  /* 把已经挂上书或系列的书评 md 改回规范名。只动名字，正文与关联都不动 */
+  ipcMain.handle("reviews:rename", () => {
+    if (!db || !lib) return null;
+    try {
+      return normalizeNames(db, lib.reviewDir);
+    } catch (e) {
+      console.error("[review] 重命名失败", e);
       return null;
     }
   });

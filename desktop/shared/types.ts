@@ -180,6 +180,10 @@ export interface ReviewIoSummary {
   skipped: number;
   /** 写出去的篇数，导出与同步才有 */
   written: number;
+  /** 目录里没了、库里跟着删掉的篇数，只有同步才有 */
+  removed?: number;
+  /** 在外面改了文件名、库里跟着改映射的篇数，只有同步才有 */
+  renamed?: number;
   dir?: string;
   msgs: string[];
 }
@@ -304,8 +308,8 @@ export interface BooklibApi {
   removeCategory(id: number): Promise<CatResult>;
   moveCategory(id: number, dir: -1 | 1): Promise<CatResult>;
   createReview(p: ReviewInput): Promise<RvResult>;
-  updateReview(id: number, p: ReviewPatch): Promise<RvResult>;
-  deleteReview(id: number): Promise<RvResult>;
+  updateReview(kind: string, id: number, p: ReviewPatch): Promise<RvResult>;
+  deleteReview(kind: string, id: number): Promise<RvResult>;
   associateOrphan(orphanId: number, bookId: string): Promise<RvResult>;
   /* kind 必须带：未匹配表的 id 与书评表各从 1 起，只给 id 会挂错那篇 */
   moveReview(kind: string, id: number, bookId: string): Promise<RvResult>;
@@ -323,6 +327,8 @@ export interface BooklibApi {
   exportReviews(): Promise<ReviewIoSummary | null>;
   reviewDirInfo(): Promise<{ dir: string; exist: boolean; files: number }>;
   syncReviewDir(): Promise<ReviewIoSummary | null>;
+  /** 把已经挂上书或系列的书评 md 改回规范名，renamed 是改了几份 */
+  renameReviewFiles(): Promise<ReviewIoSummary | null>;
   openReviewDir(): Promise<boolean>;
 
   /** 备份与恢复 */
