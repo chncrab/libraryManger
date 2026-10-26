@@ -1,4 +1,8 @@
 /** 交互冒烟：连 Electron 调试端口，按真实点击走一遍关键路径。用法：node scripts/smoke.mjs */
+import path from "node:path";
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+
 const port = process.env.CDP_PORT || 9334;
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const page = list.find((t) => t.type === "page");
@@ -191,7 +195,30 @@ check("点外侧遮罩收起详情", drawerOff === false);
 await clickText(".seg button", "书评");
 await wait(1200);
 const rvItems = await js("document.querySelectorAll('.rvs-list .rvi').length");
-check("书评左栏列出 113 篇", rvItems === 113, "实际 " + rvItems);
+/* 篇数以库里实际为准。样本库会随用户增删书评变化，写死数字一改就红 */
+const libDb = path.join(process.env.BOOKLIB_ROOT || path.join("data", "smoke_lib"), "library.db");
+const dbReviews = (() => {
+  try {
+    const py = "import sqlite3,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);print(c.execute('SELECT (SELECT COUNT(*) FROM reviews WHERE deleted_at IS NULL)+(SELECT COUNT(*) FROM orphan_reviews WHERE deleted_at IS NULL)').fetchone()[0])";
+    return Number(execFileSync("python", ["-c", py, libDb], { encoding: "utf8" }).trim());
+  } catch {
+    return 0;
+  }
+})();
+check(
+  "书评左栏把库里的书评都列出来",
+  dbReviews ? rvItems === dbReviews : rvItems >= 100,
+  "左栏 " + rvItems + "，库里 " + (dbReviews || "没读到")
+);
+/* 空书评也会入库，按时间排第一的那个可能正好是空的。先挑一篇有字的再看中间 */
+await js(`(() => {
+  const it = [...document.querySelectorAll('.rvs-list .rvi')].find((e) => {
+    const m = e.querySelector('.rvi-m');
+    return m && !/^0 字/.test(m.textContent.trim());
+  });
+  if (it) it.click();
+})()`);
+await wait(500);
 const rvBody = await js("(document.querySelector('.rvm-body .md')||{}).textContent||''");
 check("中间显示书评正文", rvBody.length > 0, rvBody.trim().slice(0, 18));
 const rvLeftX = await js("(() => { const a=document.querySelector('.rvs'); const b=document.querySelector('.rvm'); return a && b ? Math.round(a.getBoundingClientRect().width) + '/' + Math.round(b.getBoundingClientRect().left) : '0/0'; })()");
@@ -407,6 +434,45 @@ await wait(1000);
 const rvAfterDel = await js("document.querySelectorAll('.rvs-list .rvi').length");
 check("删除草稿后回到原数量", rvCfm && rvAfterDel === rvBefore, "确认框 " + rvCfm + "，删除后 " + rvAfterDel);
 
+// 18b 未匹配的书评也要能右键删掉（它和普通书评不在同一张表，id 会撞）
+const rightClickOrphan = () =>
+  js(`(() => {
+    const it = [...document.querySelectorAll('.rvs-list .rvi')].find(e => (e.textContent || '').includes('未匹配'));
+    if (!it) return false;
+    it.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 220, clientY: 320 }));
+    return true;
+  })()`);
+let orphanRight = await rightClickOrphan();
+/* 样本库里没有未匹配时，放一份对不上书的 md 进去，让目录监听把它收进未匹配池。
+   这条断言测的是「未匹配那张表也能删」，不能因为样本里恰好没有就跳过 */
+if (!orphanRight) {
+  const rdir = path.join(path.dirname(libDb), "reviews");
+  fs.writeFileSync(path.join(rdir, "未匹配-《这本不存在》.md"), "冒烟用的未匹配书评", "utf8");
+  await wait(3000);
+  await clickText(".seg button", "书架");
+  await wait(600);
+  await clickText(".seg button", "书评");
+  await wait(1000);
+  orphanRight = await rightClickOrphan();
+}
+await wait(400);
+const orphanDelState = await js(`(() => {
+  const b = [...document.querySelectorAll('.ctx-i')].find(e => e.textContent === '删除书评');
+  if (!b) return 'no-item';
+  return b.className.includes('off') ? 'disabled' : 'enabled';
+})()`);
+const rvOrphanBefore = await js("document.querySelectorAll('.rvs-list .rvi').length");
+await js(`[...document.querySelectorAll('.ctx-i')].find(e => e.textContent === '删除书评').click()`);
+await wait(450);
+await js("document.querySelector('.cfm-b .mini.danger').click()");
+await wait(1100);
+const rvOrphanAfter = await js("document.querySelectorAll('.rvs-list .rvi').length");
+check(
+  "未匹配书评右键能删掉",
+  orphanRight && orphanDelState === "enabled" && rvOrphanAfter === rvOrphanBefore - 1,
+  orphanDelState + "，" + rvOrphanBefore + " → " + rvOrphanAfter
+);
+
 // 19 排序圆片：加一个条件，工具栏上多一片
 await clickText(".seg button", "书架");
 await wait(700);
@@ -515,21 +581,46 @@ check(
 await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
 await wait(300);
 
-// 26 书评目录固定是书库里的 reviews，自己会同步
+// 26 书评栏的动作条：刷新与重命名，右边写着目录里几份 md
 await clickText(".seg button", "书评");
 await wait(1200);
-const dirTxt = await js(`(document.querySelector('.rvs-dir') || {}).textContent || ''`);
-check("书评目录就是书库里的 reviews", dirTxt.includes("书库里的 reviews") && /\d+ 个 md/.test(dirTxt), dirTxt);
+const actsTxt = await js(`(document.querySelector('.rvs-acts') || {}).textContent || ''`);
+check(
+  "书评栏有刷新与重命名",
+  actsTxt.includes("刷新") && actsTxt.includes("重命名") && /\d+ 个 md/.test(actsTxt),
+  actsTxt
+);
+const oldBar = await js(`document.querySelectorAll('.rvs-dir').length`);
+check("只开文件夹的旧提示条已去掉", oldBar === 0, "还剩 " + oldBar + " 条");
+await js(`[...document.querySelectorAll('.rvs-acts .mini')].find((b) => b.textContent.includes('重命名')).click()`);
+await wait(1600);
+const renToast = await js(`(document.querySelector('.toast') || {}).textContent || ''`);
+check("重命名按下去会给结果", renToast.includes("重命名"), renToast);
+await js(`[...document.querySelectorAll('.rvs-acts .mini')].find((b) => b.textContent.includes('刷新')).click()`);
+await wait(1900);
+const refToast = await js(`(document.querySelector('.toast') || {}).textContent || ''`);
+check("刷新会扫一遍目录并报结果", refToast.includes("刷新"), refToast);
 await js(`[...document.querySelectorAll('.rvs-h .mini')].find((b) => b.textContent.includes('更多')).click()`);
 await wait(400);
 const rvMenu = await js(`[...document.querySelectorAll('.ctx-i')].map((e) => e.textContent).join('|')`);
 check(
-  "书评菜单里有打开文件夹与手动同步",
-  rvMenu.includes("打开书评文件夹") && rvMenu.includes("立即与文件夹同步"),
+  "书评菜单保留打开文件夹，重复的同步项已收进刷新",
+  rvMenu.includes("打开书评文件夹") && !rvMenu.includes("立即与文件夹同步"),
   rvMenu
 );
 await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
 await wait(300);
+
+// 27 空的 md 也要收进来：目录里有这份文件，界面上就得有这一条
+const emptyDir = path.join(rootNow, "reviews");
+const emptyFile = path.join(emptyDir, "空占位-冒烟.md");
+fs.writeFileSync(emptyFile, "", "utf8");
+await js(`[...document.querySelectorAll('.rvs-acts .mini')].find((b) => b.textContent.includes('刷新')).click()`);
+await wait(2400);
+const seenEmpty = await js(
+  `[...document.querySelectorAll('.rvs-list .rvi')].some((e) => (e.textContent || '').includes('空占位'))`
+);
+check("空的 md 也进库并显示", seenEmpty === true, "写了一份 " + path.basename(emptyFile));
 
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 通过`);

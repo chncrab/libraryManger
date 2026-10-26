@@ -172,6 +172,240 @@ fs.writeFileSync(path.join(dir, newFile), "目录里新放的一篇", "utf8");
 const sync2 = io.syncDir(db, dir);
 t("目录里新增的 md 被导进来", sync2.orphan >= 1, "未匹配 " + sync2.orphan);
 
+/* 关掉软件的时候在文件夹里删掉几篇，再打开不该又冒出来。删的是刚放进去那篇未匹配 */
+const orphanBefore = db.prepare("SELECT COUNT(*) c FROM orphan_reviews WHERE deleted_at IS NULL").get().c;
+fs.unlinkSync(path.join(dir, newFile));
+const syncDel = io.syncDir(db, dir);
+const orphanAfter = db.prepare("SELECT COUNT(*) c FROM orphan_reviews WHERE deleted_at IS NULL").get().c;
+t(
+  "文件夹里删掉的书评跟着从库里删",
+  orphanAfter === orphanBefore - 1 && (syncDel.removed || 0) >= 1,
+  "未匹配 " + orphanBefore + " → " + orphanAfter + "，removed " + (syncDel.removed || 0)
+);
+t("删掉的那份没被写回目录", !fs.existsSync(path.join(dir, newFile)), newFile);
+
+/* 外面改个文件名，正文一字不动。应当认成同一篇，不是删一篇加一篇 */
+const renameTo = "外面随手改的名字-测试.md";
+fs.renameSync(path.join(dir, target), path.join(dir, renameTo));
+const cntBefore = db.prepare("SELECT COUNT(*) c FROM reviews WHERE deleted_at IS NULL").get().c;
+const syncRename = io.syncDir(db, dir);
+const cntAfter = db.prepare("SELECT COUNT(*) c FROM reviews WHERE deleted_at IS NULL").get().c;
+t(
+  "外部改名不算删一篇加一篇",
+  !syncRename.removed && cntBefore === cntAfter,
+  "removed " + (syncRename.removed || 0) + "，" + cntBefore + " → " + cntAfter
+);
+t(
+  "外部改名后关联没掉",
+  !!db.prepare("SELECT id FROM reviews WHERE book_id = (SELECT id FROM books WHERE title = ?) AND deleted_at IS NULL").get(free.title)
+);
+t("改名后落回规范名，不留散落的旧名", fs.existsSync(path.join(dir, target)) && !fs.existsSync(path.join(dir, renameTo)), target);
+
+/* 外面丢进来一份名字不规范的 md，书名在里面所以自动挂上了书。
+   挂上之后文件要改成规范名，不能另写一份留着原来那张，否则目录里两份同内容 */
+const free2 = db
+  .prepare(
+    `SELECT b.title FROM books b
+      WHERE b.deleted_at IS NULL AND b.title <> ?
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)
+      ORDER BY LENGTH(b.title) DESC, b.title LIMIT 1`
+  )
+  .get(free.title);
+const rawName = "随手起的-《" + free2.title + "》.md";
+const rawBody = "# 自动绑定的正文\n这篇是从外面丢进来的。";
+fs.writeFileSync(path.join(dir, rawName), rawBody, "utf8");
+const syncBind = io.syncDir(db, dir);
+const boundRow = db
+  .prepare("SELECT id FROM reviews WHERE book_id = (SELECT id FROM books WHERE title = ?) AND deleted_at IS NULL")
+  .get(free2.title);
+const canon = boundRow ? rv.reviewFileName(db, { kind: "book", id: boundRow.id }) : "";
+t("名字不规范也能自动挂上书", syncBind.added >= 1 && !!boundRow, "added " + syncBind.added + "，" + rawName);
+t(
+  "挂上之后改成规范名",
+  !!canon && !fs.existsSync(path.join(dir, rawName)) && fs.existsSync(path.join(dir, canon)),
+  rawName + " → " + canon
+);
+t("改名不是另写一份，目录里只留一份", fs.readdirSync(dir).filter((f) => f.includes("《" + free2.title + "》")).length === 1, canon);
+/* 文件开头现在带首部，比正文前先把它拆掉 */
+t("改名后正文没动", canon ? io.splitFront(fs.readFileSync(path.join(dir, canon), "utf8")).body === rawBody : false);
+
+/* 首部：阅读时间、评分、书籍，正文隔一个空行跟在后面 */
+const frontRaw = canon && fs.existsSync(path.join(dir, canon)) ? fs.readFileSync(path.join(dir, canon), "utf8") : "";
+t(
+  "落盘带首部，正文在后面",
+  frontRaw.startsWith("---\n") &&
+    /^阅读时间: \d{4}-\d{2}-\d{2}$/m.test(frontRaw) &&
+    /^书籍: 《.+》$/m.test(frontRaw) &&
+    frontRaw.includes("\n---\n\n"),
+  frontRaw.slice(0, 46).replace(/\n/g, "\\n")
+);
+const rateRow = db.prepare("SELECT b.rating AS rating FROM reviews r JOIN books b ON b.id = r.book_id WHERE r.id = ?").get(boundRow.id);
+const hasRate = Number(rateRow?.rating || 0) > 0;
+t(
+  "评分行总在，有值就写数值",
+  hasRate ? /^评分: [\d.]+$/m.test(frontRaw) : /^评分:$/m.test(frontRaw),
+  "书上的评分 " + (rateRow?.rating ?? "无")
+);
+const dbBody = db.prepare("SELECT md FROM reviews WHERE id = ?").get(boundRow.id)?.md || "";
+t("首部不进库，库里只存正文", !dbBody.startsWith("---") && !/^书籍: /m.test(dbBody), dbBody.slice(0, 18));
+t(
+  "首部能被拆回来",
+  io.splitFront(frontRaw).body === rawBody && io.splitFront(frontRaw).fields["书籍"] === "《" + free2.title + "》",
+  JSON.stringify(io.splitFront(frontRaw).fields)
+);
+
+/* 文件名认不出是哪本书，靠首部里的「书籍」挂上 */
+const free6 = db
+  .prepare(
+    `SELECT b.id, b.title FROM books b
+      WHERE b.deleted_at IS NULL
+        AND (SELECT COUNT(*) FROM books b2 WHERE b2.title = b.title AND b2.deleted_at IS NULL) = 1
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)
+      ORDER BY LENGTH(b.title) DESC, b.title LIMIT 1`
+  )
+  .get();
+const fieldName = "随手起的名字.md";
+fs.writeFileSync(path.join(dir, fieldName), "---\n书籍: 《" + free6.title + "》\n---\n\n靠首部字段挂上的", "utf8");
+const gotField = io.syncDir(db, dir);
+const fieldRow = db.prepare("SELECT id, md FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(free6.id);
+t(
+  "首部的书籍字段能认领",
+  gotField.added >= 1 && !!fieldRow && fieldRow.md === "靠首部字段挂上的" && !fs.existsSync(path.join(dir, fieldName)),
+  fieldRow ? rv.reviewFileName(db, { kind: "book", id: fieldRow.id }) : "没挂上"
+);
+
+/* 这本书本来就有书评，外面又放一份同名的不同内容。并进库之后外面那份收走 */
+const dupName = "外部覆盖-《" + free.title + "》.md";
+const dupBody = "# 重复的一份\n内容跟库里不一样。";
+fs.writeFileSync(path.join(dir, dupName), dupBody, "utf8");
+const syncDup = io.syncDir(db, dir);
+const dupRow = db
+  .prepare("SELECT md FROM reviews WHERE book_id = (SELECT id FROM books WHERE title = ?) AND deleted_at IS NULL")
+  .get(free.title);
+t("同一本的第二份并进库里", syncDup.updated >= 1 && dupRow.md === dupBody, "updated " + syncDup.updated);
+t("外面那份收走，不留两份", !fs.existsSync(path.join(dir, dupName)), dupName);
+
+/* 从外面导入时不能动人家的源文件，规范名那份落在书库目录里 */
+const free3 = db
+  .prepare(
+    `SELECT b.title FROM books b
+      WHERE b.deleted_at IS NULL AND b.title <> ?
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)
+      ORDER BY LENGTH(b.title) DESC, b.title LIMIT 1`
+  )
+  .get(free.title);
+const outside = path.join(tmp, "outside");
+fs.mkdirSync(outside, { recursive: true });
+const outSrc = path.join(outside, "别处-《" + free3.title + "》.md");
+fs.writeFileSync(outSrc, "从外面导入的一篇", "utf8");
+const importedOut = io.importReviewTexts(db, [{ name: path.basename(outSrc), text: "从外面导入的一篇" }], { dir });
+const outRow = db
+  .prepare("SELECT id FROM reviews WHERE book_id = (SELECT id FROM books WHERE title = ?) AND deleted_at IS NULL")
+  .get(free3.title);
+const outCanon = outRow ? rv.reviewFileName(db, { kind: "book", id: outRow.id }) : "";
+t("外面导入的也落成规范名", importedOut.added === 1 && !!outCanon && fs.existsSync(path.join(dir, outCanon)), outCanon);
+t("源文件不动", fs.existsSync(outSrc), path.basename(outSrc));
+
+/* 「重命名」按钮：已挂书的 md 名字被改乱了，点一下应该改回规范名，正文与关联都不许动 */
+const renTarget = db
+  .prepare("SELECT r.id, r.md FROM reviews r WHERE r.deleted_at IS NULL AND r.book_id IS NOT NULL ORDER BY r.id LIMIT 1")
+  .get();
+const renCanon = rv.reviewFileName(db, { kind: "book", id: renTarget.id });
+const renJunk = "手动改的乱名-" + renTarget.id + ".md";
+fs.renameSync(path.join(dir, renCanon), path.join(dir, renJunk));
+/* 名字变了但文件还是那一个：改名不改 ino，也不改 mtime。
+   要是复制一份再删旧的，ino 会换，mtime 会变成刚刚 */
+const renStatBefore = fs.statSync(path.join(dir, renJunk));
+const renCountBefore = fs.readdirSync(dir).filter((f) => /\.md$/i.test(f)).length;
+const norm1 = io.normalizeNames(db, dir);
+const renRow = db.prepare("SELECT md, book_id FROM reviews WHERE id = ?").get(renTarget.id);
+t(
+  "重命名把乱名改回规范名",
+  norm1.renamed === 1 && fs.existsSync(path.join(dir, renCanon)) && !fs.existsSync(path.join(dir, renJunk)),
+  "renamed " + norm1.renamed + " / " + renCanon
+);
+t("重命名不动正文与关联", renRow.md === renTarget.md && !!renRow.book_id);
+const renStatAfter = fs.existsSync(path.join(dir, renCanon)) ? fs.statSync(path.join(dir, renCanon)) : null;
+const renCountAfter = fs.readdirSync(dir).filter((f) => /\.md$/i.test(f)).length;
+t(
+  "重命名是改名，不是复制后改名",
+  !!renStatAfter &&
+    renStatAfter.ino === renStatBefore.ino &&
+    renStatAfter.mtimeMs === renStatBefore.mtimeMs &&
+    renCountAfter === renCountBefore,
+  (renStatAfter ? renStatAfter.ino : "-") + " / " + renStatBefore.ino + "，文件数 " + renCountBefore + " → " + renCountAfter
+);
+const norm2 = io.normalizeNames(db, dir);
+t("名字已经规范时再点一次不报改名", (norm2.renamed || 0) === 0, "renamed " + (norm2.renamed || 0));
+
+/* 空 md 也要收进来。目录里摆着一个空文件，界面上却查无此篇，比收一条空书评更难理解 */
+const free4 = db
+  .prepare(
+    `SELECT b.id, b.title FROM books b
+      WHERE b.deleted_at IS NULL
+        AND (SELECT COUNT(*) FROM books b2 WHERE b2.title = b.title AND b2.deleted_at IS NULL) = 1
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)
+      ORDER BY LENGTH(b.title) DESC, b.title LIMIT 1`
+  )
+  .get();
+const emptyName = "空文件-《" + free4.title + "》.md";
+fs.writeFileSync(path.join(dir, emptyName), "", "utf8");
+const gotEmpty = io.syncDir(db, dir);
+const emptyRow = db
+  .prepare("SELECT id, md FROM reviews WHERE book_id = ? AND deleted_at IS NULL")
+  .get(free4.id);
+const emptyCanon = emptyRow ? rv.reviewFileName(db, { kind: "book", id: emptyRow.id }) : "";
+t(
+  "空的 md 也建一条书评",
+  gotEmpty.added >= 1 && !!emptyRow && emptyRow.md === "" && fs.existsSync(path.join(dir, emptyCanon)),
+  emptyCanon || "没入册"
+);
+
+/* 空文件不许盖掉已有正文：同一本书已经有内容了，目录里再来一份空的，库里那份得留住 */
+const filled = db
+  .prepare(
+    `SELECT r.id, r.md, b.title FROM reviews r JOIN books b ON b.id = r.book_id
+      WHERE r.deleted_at IS NULL AND LENGTH(TRIM(r.md)) > 0 ORDER BY r.id LIMIT 1`
+  )
+  .get();
+fs.writeFileSync(path.join(dir, "空的另一份-《" + filled.title + "》.md"), "", "utf8");
+io.syncDir(db, dir);
+const filledAfter = db.prepare("SELECT md FROM reviews WHERE id = ?").get(filled.id);
+t("空文件不覆盖已有正文", filledAfter.md === filled.md, "正文 " + (filledAfter.md || "").length + " 字");
+
+/* 匹配不上的空文件同样进未匹配池，不能凭空消失 */
+const orphanEmpty = "空占位-no-such-book.md";
+fs.writeFileSync(path.join(dir, orphanEmpty), "", "utf8");
+const gotOrphanEmpty = io.syncDir(db, dir);
+const orphanRow = db.prepare("SELECT id, md FROM orphan_reviews WHERE file_name = ? AND deleted_at IS NULL").get(orphanEmpty);
+t("匹配不上的空文件进未匹配池", gotOrphanEmpty.orphan >= 1 && !!orphanRow, "orphan " + gotOrphanEmpty.orphan);
+
+/* 未匹配与普通书评的 id 各从 1 起，改正文与删除都必须按 kind 分表，否则打到同 id 的另一篇。
+   这里自造一条孤儿来试，不碰库里原有的记录，免得打乱后面按 id 取最小的断言 */
+const tmpFile = "测试-《只能删一次的孤儿》书评.md";
+fs.writeFileSync(path.join(dir, tmpFile), "临时孤儿正文，用来试改与删", "utf8");
+io.syncDir(db, dir);
+/* 未匹配的没有关联对象，首部里那几行填不出来，就别硬写一个空头 */
+const orphanRaw = fs.existsSync(path.join(dir, tmpFile)) ? fs.readFileSync(path.join(dir, tmpFile), "utf8") : "";
+t("未匹配的不写首部", orphanRaw.startsWith("临时孤儿"), orphanRaw.slice(0, 16));
+const tmpRow = db.prepare("SELECT id FROM orphan_reviews WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").get();
+/* 未匹配条目在界面上靠这个名字认人，取不到就全叫「书评」，看着像一条都没有名字 */
+const listedOrphan = rv.listReviews(db).find((r) => r.kind === "orphan" && r.id === tmpRow.id);
+t(
+  "未匹配条目带着自己的名字",
+  !!listedOrphan && listedOrphan.title === "只能删一次的孤儿",
+  listedOrphan ? listedOrphan.title : "没有这条"
+);
+const bRow = db.prepare("SELECT id, md FROM reviews WHERE book_id IS NOT NULL AND deleted_at IS NULL ORDER BY id LIMIT 1").get();
+const setO = rv.updateReview(db, "orphan", tmpRow.id, { md: "未匹配改过的正文" });
+const oAfter = db.prepare("SELECT md FROM orphan_reviews WHERE id = ?").get(tmpRow.id);
+const bAfter = db.prepare("SELECT md FROM reviews WHERE id = ?").get(bRow.id);
+t("改未匹配的正文落在这条上", setO.ok === true && oAfter.md === "未匹配改过的正文");
+t("改未匹配的正文不串到普通书评", bAfter.md === bRow.md, "同 id 的普通书评未受影响");
+const delO = rv.deleteOrphan(db, tmpRow.id);
+const bStill = db.prepare("SELECT deleted_at FROM reviews WHERE id = ?").get(bRow.id);
+t("删未匹配不误删同 id 的普通书评", delO.ok === true && !bStill.deleted_at);
+
 console.log("\n[8] 换封面与撤销");
 const withCover = db.prepare("SELECT id, cover_file FROM books WHERE cover_file <> '' AND deleted_at IS NULL LIMIT 1").get();
 const coversDir = path.join(tmp, "covers");

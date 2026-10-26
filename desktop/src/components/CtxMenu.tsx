@@ -59,7 +59,11 @@ export default function CtxMenu({ x, y, items, onPick, onClose }: Props) {
           <div
             className={"ctx-i" + (it.danger ? " danger" : "") + (it.disabled ? " off" : "")}
             onClick={() => {
-              if (it.disabled) return;
+              /* 灰掉的项点下去也要收菜单，否则看着像没反应 */
+              if (it.disabled) {
+                onClose();
+                return;
+              }
               onPick(it.key);
               onClose();
             }}

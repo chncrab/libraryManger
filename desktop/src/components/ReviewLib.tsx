@@ -66,10 +66,14 @@ export default function ReviewLib({
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState("");
   const richRef = useRef<RichHandle | null>(null);
+  const toastTimer = useRef<number | null>(null);
 
+  /* 后一句提示要顶掉前一句，前一句的收尾定时器也得一并撤掉，
+     否则它到点会把刚弹出来的新提示一起清掉 */
   const say = (t: string) => {
     setToast(t);
-    window.setTimeout(() => setToast(""), 2600);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2600);
     onSay?.(t);
   };
 
@@ -134,7 +138,7 @@ export default function ReviewLib({
     if (draft === cur.md) return;
     const t = window.setTimeout(async () => {
       setStat("保存中…");
-      const r = await api.updateReview(cur.id, { md: draft });
+      const r = await api.updateReview(cur.kind, cur.id, { md: draft });
       setStat(r.ok ? "已保存" : r.msg || "保存失败");
       if (r.ok) {
         onChanged();
@@ -157,8 +161,8 @@ export default function ReviewLib({
   };
 
   const setGradeOf = async (g: string) => {
-    if (!cur || cur.kind === "orphan") return;
-    const r = await api.updateReview(cur.id, { grade: g });
+    if (!cur) return;
+    const r = await api.updateReview(cur.kind, cur.id, { grade: g });
     if (r.ok) {
       onChanged();
       say("已标为" + (GRADE_NAME[g] || g));
@@ -180,8 +184,22 @@ export default function ReviewLib({
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
 
+  /* 手动保存：不等那 0.7 秒，点了就落库并写 md */
+  const saveNow = async () => {
+    if (!cur) return;
+    setStat("保存中…");
+    const r = await api.updateReview(cur.kind, cur.id, { md: draft });
+    setStat(r.ok ? "已保存" : r.msg || "保存失败");
+    if (r.ok) {
+      onChanged();
+      onRefreshDir?.();
+      say("已保存并写入 md");
+    }
+  };
+
   const doDelete = async (r: ReviewRow) => {
-    const res = await api.deleteReview(r.id);
+    /* 未匹配那份在另一张表里，kind 必须一起给，不然会删到同 id 的另一篇书评 */
+    const res = await api.deleteReview(r.kind, r.id);
     if (res.ok) {
       if (keyOf(r) === selKey) setSelKey(null);
       onChanged();
@@ -227,6 +245,8 @@ export default function ReviewLib({
     if (r.orphan) parts.push("未匹配 " + r.orphan);
     if (r.skipped) parts.push("跳过 " + r.skipped);
     if (r.written) parts.push("写入 " + r.written);
+    if (r.removed) parts.push("删除 " + r.removed);
+    if (r.renamed) parts.push("跟随改名 " + r.renamed);
     say(verb + "：" + (parts.join("，") || "没有变化"));
   };
 
@@ -253,6 +273,40 @@ export default function ReviewLib({
     }
   };
 
+  /* 刷新：重新扫一遍目录再拉清单。外面改过 md、或者监听慢了半拍，点一下就对齐 */
+  const doRefresh = async () => {
+    setBusy("刷新中…");
+    try {
+      const r = await api.syncReviewDir();
+      if (!r) {
+        say("刷新失败");
+        return;
+      }
+      summarize("刷新", r);
+      onChanged();
+      onRefreshDir?.();
+    } finally {
+      setBusy("");
+    }
+  };
+
+  /* 重命名：已挂到书或系列的那些一律改回「作者-《书名》书评.md」这种规范名 */
+  const doRename = async () => {
+    setBusy("重命名中…");
+    try {
+      const r = await api.renameReviewFiles();
+      if (!r) {
+        say("重命名失败");
+        return;
+      }
+      const n = r.renamed || 0;
+      say(n ? "重命名：" + n + " 份 md 已改成规范名" : "重命名：文件名都已经规范");
+      onRefreshDir?.();
+    } finally {
+      setBusy("");
+    }
+  };
+
   const diag = () => {
     say(
       "桌面版 · 库内 " +
@@ -270,13 +324,12 @@ export default function ReviewLib({
     { key: "export", label: "导出一份到别处…" },
     { key: "s1", label: "", sep: true },
     { key: "openDir", label: "打开书评文件夹" },
-    { key: "sync", label: "立即与文件夹同步" },
     { key: "s2", label: "", sep: true },
     { key: "diag", label: "存储自检" }
   ];
 
   const pickMenu = async (k: string) => {
-    if (k === "importFiles" || k === "importFolder" || k === "export" || k === "sync") return runIo(k);
+    if (k === "importFiles" || k === "importFolder" || k === "export") return runIo(k);
     if (k === "openDir") {
       await api.openReviewDir();
       return;
@@ -321,7 +374,7 @@ export default function ReviewLib({
       { key: "export", label: "导出为 Markdown" },
       { key: "copy", label: "复制全文" },
       { key: "s2", label: "", sep: true },
-      { key: "del", label: "删除书评", danger: true, disabled: r.kind === "orphan" }
+      { key: "del", label: "删除书评", danger: true }
     ];
     setCtx({ x: e.clientX, y: e.clientY, items, row: r });
   };
@@ -396,8 +449,21 @@ export default function ReviewLib({
             </button>
           ))}
         </div>
-        <div className="rvs-dir" title={(dirInfo?.dir || "") + "（在资源管理器里改 md，这里会跟着变）"} onClick={() => api.openReviewDir()}>
-          书库里的 reviews · {dirInfo?.files ?? 0} 个 md · 自动同步，点这里打开文件夹
+        <div className="rvs-acts">
+          <button className="mini" onClick={doRefresh} disabled={!!busy} title="重新扫一遍书评文件夹，与库里对齐">
+            刷新
+          </button>
+          <button
+            className="mini"
+            onClick={doRename}
+            disabled={!!busy}
+            title="把已经挂到书或系列的 md 改回规范名：作者-《书名》书评.md"
+          >
+            重命名
+          </button>
+          <span className="rvs-cnt" title={dirInfo?.dir || "还没有打开书库"}>
+            {dirInfo?.files ?? 0} 个 md
+          </span>
         </div>
         <div className="rvs-list">
           {list.map((r) => (
@@ -435,7 +501,6 @@ export default function ReviewLib({
                     key={g}
                     className={"gbtn" + ((cur.grade || "normal") === g ? " on" : "")}
                     title={GRADE_NAME[g]}
-                    disabled={cur.kind === "orphan"}
                     onClick={() => setGradeOf(g)}
                   >
                     {GRADE_ICON[g]}
@@ -455,6 +520,11 @@ export default function ReviewLib({
               <button className="mini" onClick={() => exportMd(cur)}>
                 导出
               </button>
+              {editing ? (
+                <button className="mini" onClick={saveNow} title="立刻保存，并把这篇写成书评文件夹里的 md">
+                  保存
+                </button>
+              ) : null}
               <button
                 className="mini"
                 onClick={() => {
@@ -494,7 +564,11 @@ export default function ReviewLib({
 
       {del ? (
         <Confirm
-          text={"删除《" + (del.title || "这篇") + "》的书评？源数据不动，只是从库里拿掉。"}
+          text={
+            del.kind === "orphan"
+              ? "删除这篇未匹配书评？源数据不动，只是从库里拿掉。"
+              : "删除《" + (del.title || "这篇") + "》的书评？源数据不动，只是从库里拿掉。"
+          }
           onOk={() => {
             doDelete(del);
             setDel(null);

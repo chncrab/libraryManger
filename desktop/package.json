@@ -13,6 +13,8 @@
     "start": "npm run build && electron .",
     "import:demo": "node scripts/import-demo-data.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:review": "node scripts/smoke-review.mjs",
     "dist": "npm run build && electron-builder --win nsis",
     "dist:dir": "npm run build && electron-builder --dir"
   },
