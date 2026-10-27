@@ -85,6 +85,12 @@ for (const act of acts) {
   } else if (act === "rvedit") {
     await evalJs("(() => { const b = [...document.querySelectorAll('.rvm-h .mini')].find(x => x.textContent === '编辑'); if (b) b.click(); })()");
     await wait(700);
+  } else if (act === "fadmin") {
+    /* 从顶栏「更多」进字段管理 */
+    await evalJs(`(() => { const b = [...document.querySelectorAll('.topbar .mini')].find(x => x.textContent.includes('更多')); if (b) b.click(); })()`);
+    await wait(500);
+    await clickText(".ctx-i", "字段管理…");
+    await wait(900);
   } else if (act === "cad") {
     await evalJs("(() => { const b = document.querySelector('.h4row .mini'); if (b) b.click(); })()");
     await wait(700);

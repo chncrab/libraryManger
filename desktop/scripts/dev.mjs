@@ -11,6 +11,13 @@ import electronPath from "electron";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(ROOT, "..");
 
+/* Windows 控制台默认 936，Node 与 Electron 写出去的是 UTF-8，日志整行变成乱码。
+   码页属于控制台本身，在这里改一次，后面拉起来的进程都跟着用，直接 npm run dev 也一样。
+   run-dev.cmd 里也有一句 chcp，双点启动走那条，重复设一次没有副作用 */
+if (process.platform === "win32") {
+  spawnSync("chcp 65001", { stdio: "ignore", shell: true });
+}
+
 /* 宿主进程（某些编辑器/工具链）会把 ELECTRON_RUN_AS_NODE 传下来，
    带着它启动 Electron 等于跑了个纯 Node，app 与 protocol 全是 undefined */
 function envWithoutRunAsNode() {

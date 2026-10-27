@@ -171,7 +171,7 @@ check(
 // 5b 详情里的下拉统一成同一套，关闭是叉号，评分范围 0 到 10
 const pickShown = await js("document.querySelectorAll('.drawer .kv .mp-show').length");
 const xText = await js("((document.querySelector('.dh .xbtn')||{}).textContent||'').trim()");
-const scoreMax = await js("(document.querySelector('.drawer .kv input[type=number]')||{}).max||''");
+const scoreMax = await js(`[...document.querySelectorAll('.drawer .kv input[type=number]')].map(i => i.max).find(m => m === '10') || ''`);
 const ebookPick = await js(`(() => {
   const rows = [...document.querySelectorAll('.drawer .kv > div')];
   const row = rows.find(r => (r.querySelector('span')||{}).textContent === '电子书');
