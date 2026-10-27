@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { MIGRATIONS } from "./schema";
+import { ensureFts } from "./fts";
 
 export type DB = Database.Database;
 
@@ -50,6 +51,8 @@ function migrate(conn: DB): void {
     run();
     console.log(`[db] 已执行迁移 ${m.version} ${m.name}`);
   }
+  /* 新索引表建出来是空的，补一遍，否则搜索会一本都搜不到 */
+  ensureFts(conn);
 }
 
 export function isEmpty(conn: DB): boolean {

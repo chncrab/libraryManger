@@ -2,6 +2,12 @@ import type { DB } from "../db";
 import type { BookPatch, BookRow } from "../../shared/types";
 import { getBook } from "./bookService";
 import { copyCoverFor, renameCoverFor } from "./coverService";
+import { setCustom } from "./fieldService";
+import { rebuildFts } from "../db/fts";
+
+/* 索引重写搬去了 db/fts，那边开库的迁移流程也要用。
+   这里再导出一次，外部一直是从 editService 拿的 */
+export { rebuildFts };
 
 /** 实体书的取值域，写库前要过滤，避免手打错字造出脏值 */
 export const STATE_VALUES = ["实体", "私印", "预定中", "购物车", "无"];
@@ -35,24 +41,6 @@ function findOrCreateAuthor(db: DB, name: string): number {
   if (hit) return hit.id;
   const info = db.prepare("INSERT INTO authors (name) VALUES (?)").run(n);
   return Number(info.lastInsertRowid);
-}
-
-/** FTS 是独立表，改了书名作者系列备注必须整行重写，否则搜索还是旧词 */
-export function rebuildFts(db: DB, id: string): void {
-  const r = db
-    .prepare(
-      `SELECT b.rowid AS rid, b.title, b.subtitle, b.original_title, b.note,
-              COALESCE(s.name, '') AS series,
-              (SELECT group_concat(a.name, '、') FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-                 WHERE ba.book_id = b.id) AS authors
-         FROM books b LEFT JOIN series s ON s.id = b.series_id WHERE b.id = ?`
-    )
-    .get(id) as any;
-  if (!r) return;
-  db.prepare("DELETE FROM books_fts WHERE rowid = ?").run(r.rid);
-  db.prepare(
-    "INSERT INTO books_fts (rowid, title, subtitle, original_title, authors, series, note) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(r.rid, r.title || "", r.subtitle || "", r.original_title || "", r.authors || "", r.series || "", r.note || "");
 }
 
 /**
@@ -125,6 +113,8 @@ export function updateBook(db: DB, id: string, p: BookPatch, coversDir = ""): Bo
       const ins = db.prepare("INSERT OR IGNORE INTO book_states (book_id, state) VALUES (?, ?)");
       for (const n of names) ins.run(id, n);
     }
+    /* 自定义字段走值表，传了哪个键就整组重写哪个 */
+    if (p.custom) setCustom(db, id, p.custom);
     rebuildFts(db, id);
   });
   run();
@@ -185,6 +175,9 @@ export function copyBook(db: DB, id: string, coversDir = ""): BookRow | null {
     db.prepare("INSERT OR IGNORE INTO book_authors (book_id, author_id, role, ord) SELECT ?, author_id, role, ord FROM book_authors WHERE book_id = ?").run(nid, id);
     db.prepare("INSERT OR IGNORE INTO book_categories (book_id, category_id) SELECT ?, category_id FROM book_categories WHERE book_id = ?").run(nid, id);
     db.prepare("INSERT OR IGNORE INTO book_states (book_id, state) SELECT ?, state FROM book_states WHERE book_id = ?").run(nid, id);
+    db.prepare(
+      "INSERT OR IGNORE INTO book_field_values (book_id, field_id, ord, val, num, day, ref) SELECT ?, field_id, ord, val, num, day, ref FROM book_field_values WHERE book_id = ?"
+    ).run(nid, id);
     rebuildFts(db, nid);
   });
   run();

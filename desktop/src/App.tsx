@@ -7,6 +7,7 @@ import DetailPanel from "./components/DetailPanel";
 import ReviewLib from "./components/ReviewLib";
 import CtxMenu, { type CtxItem } from "./components/CtxMenu";
 import CategoryAdmin from "./components/CategoryAdmin";
+import FieldAdmin from "./components/FieldAdmin";
 import Confirm from "./components/Confirm";
 import SortBar, { DEFAULT_SORTS, normalizeSorts } from "./components/SortBar";
 import { ColumnPanel, AdvPanel } from "./components/ToolPanels";
@@ -15,9 +16,20 @@ import SeriesPanel from "./components/SeriesPanel";
 import LibraryGate from "./components/LibraryGate";
 import { copyText } from "./clip";
 import { loadJson, loadStr, saveJson, saveStr } from "./store";
-import { DEFAULT_HIDDEN } from "./columns";
+import { DEFAULT_HIDDEN, sortablesOf } from "./columns";
 import { EMPTY_ADV } from "../shared/types";
-import type { AdvFilter, AppInfo, BookPatch, BookRow, CatNode, Facets, ReviewRow, SeriesInfo, SortKey, SortSpec } from "../shared/types";
+import type {
+  AdvFilter,
+  AppInfo,
+  BookPatch,
+  BookRow,
+  CatNode,
+  Facets,
+  FieldDef,
+  ReviewRow,
+  SeriesInfo,
+  SortSpec
+} from "../shared/types";
 
 type View = "grid" | "table" | "review";
 
@@ -67,6 +79,8 @@ export default function App() {
   };
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
   const [cats, setCats] = useState<CatNode[]>([]);
+  /* 字段定义：表格列、详情行、排序键、筛选控件全从它来 */
+  const [fields, setFields] = useState<FieldDef[]>([]);
 
   const [seriesList, setSeriesList] = useState<SeriesInfo[]>([]);
   const [serSort, setSerSort] = useState<SerSort>(() => (loadStr("serSort", "n") as SerSort) || "n");
@@ -75,6 +89,7 @@ export default function App() {
   const [ctx, setCtx] = useState<CtxState | null>(null);
   const [more, setMore] = useState<{ x: number; y: number } | null>(null);
   const [cadmin, setCadmin] = useState(false);
+  const [fadmin, setFadmin] = useState(false);
   const [colOpen, setColOpen] = useState(false);
   const [advOpen, setAdvOpen] = useState(false);
   const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
@@ -105,6 +120,7 @@ export default function App() {
   };
 
   const seriesMode = isSeries(media);
+  const sortables = useMemo(() => sortablesOf(fields), [fields]);
 
   useEffect(() => {
     api.info().then(setInfo);
@@ -131,6 +147,10 @@ export default function App() {
   /* 表格里的分类多选要用整棵树，分类管理改完也要跟着变 */
   useEffect(() => {
     api.categoryTree().then(setCats);
+  }, [tick]);
+
+  useEffect(() => {
+    api.listFields().then(setFields);
   }, [tick]);
 
   useEffect(() => {
@@ -169,6 +189,7 @@ export default function App() {
       decades: filter.decades,
       seriesId: filter.seriesId,
       adv,
+      fvals: adv.fvals || [],
       offset,
       limit: PAGE
     }),
@@ -413,6 +434,8 @@ export default function App() {
     { key: "restore", label: "从备份恢复…" },
     { key: "copyLib", label: "把整个书库另存一份…" },
     { key: "s1", label: "", sep: true },
+    { key: "fields", label: "字段管理…" },
+    { key: "cats", label: "分类管理…" },
     { key: "switch", label: "切换书库…" },
     { key: "theme", label: theme === "dark" ? "切换到浅色主题" : "切换到深色主题" },
     { key: "s2", label: "", sep: true },
@@ -433,6 +456,8 @@ export default function App() {
       const r = await api.restoreDb();
       if (r && !r.ok) say(r.msg || "已取消");
     }
+    if (k === "fields") setFadmin(true);
+    if (k === "cats") setCadmin(true);
     if (k === "theme") setTheme((t) => (t === "dark" ? "light" : "dark"));
     if (k === "copyLib") {
       const r = await api.copyLibraryTo();
@@ -480,8 +505,20 @@ export default function App() {
   if (adv.yearTo != null) chips.push({ label: "出版 ≤ " + adv.yearTo, clear: () => setAdv({ ...adv, yearTo: null }) });
   if (adv.hasReview !== null) chips.push({ label: adv.hasReview ? "有书评" : "没书评", clear: () => setAdv({ ...adv, hasReview: null }) });
   if (adv.note.trim()) chips.push({ label: "备注含 " + adv.note.trim(), clear: () => setAdv({ ...adv, note: "" }) });
+  for (const fv of adv.fvals || []) {
+    const fd = fields.find((f) => f.key === fv.key);
+    const label = fd ? fd.label : fv.key;
+    chips.push({
+      label: label + " " + (fv.op === "between" ? (fv.a || "") + " 到 " + (fv.b || "") : fv.a || ""),
+      clear: () => setAdv({ ...adv, fvals: (adv.fvals || []).filter((x) => x.key !== fv.key) })
+    });
+  }
 
-  const advCount = [adv.ratingMin, adv.ratingMax, adv.yearFrom, adv.yearTo].filter((x) => x != null).length + (adv.hasReview === null ? 0 : 1) + (adv.note.trim() ? 1 : 0);
+  const advCount =
+    [adv.ratingMin, adv.ratingMax, adv.yearFrom, adv.yearTo].filter((x) => x != null).length +
+    (adv.hasReview === null ? 0 : 1) +
+    (adv.note.trim() ? 1 : 0) +
+    (adv.fvals || []).length;
 
   /* 系列模式下按名字搜、按册数或均分排，都在内存里做，系列总共一百多个 */
   const shownSeries = useMemo(() => {
@@ -606,7 +643,7 @@ export default function App() {
                     已选 {picked.length} 本 ×
                   </span>
                 ) : null}
-                <SortBar sorts={sorts} onChange={setSorts} />
+                <SortBar sorts={sorts} onChange={setSorts} sortables={sortables} />
                 {view === "table" ? (
                   <button
                     className={"mini xs" + (hidden.length ? " on" : "")}
@@ -640,8 +677,12 @@ export default function App() {
                 {loading ? <span>读取中…</span> : null}
               </div>
 
-              {colOpen ? <ColumnPanel hidden={hidden} onChange={setHidden} onClose={() => setColOpen(false)} pos={panelPos} /> : null}
-              {advOpen ? <AdvPanel adv={adv} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} /> : null}
+              {colOpen ? (
+                <ColumnPanel fields={fields} hidden={hidden} onChange={setHidden} onClose={() => setColOpen(false)} pos={panelPos} />
+              ) : null}
+              {advOpen ? (
+                <AdvPanel adv={adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
+              ) : null}
 
               <div className="scroll" ref={scrollRef} onScroll={onScroll}>
                 {rows.length ? (
@@ -652,8 +693,8 @@ export default function App() {
                       <TableView
                         rows={rows}
                         selected={picked}
+                        fields={fields}
                         cats={cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId }))}
-                        states={STATES}
                         hidden={hidden}
                         onSelect={pickBook}
                         onCtx={openCtx}
@@ -702,7 +743,7 @@ export default function App() {
         )}
       </div>
 
-      <DetailPanel id={selected} onClose={() => setPicked([])} onSaved={saveAndRefresh} />
+      <DetailPanel id={selected} fields={fields} onClose={() => setPicked([])} onSaved={saveAndRefresh} />
 
       {serPanel ? (
         <SeriesPanel
@@ -721,6 +762,7 @@ export default function App() {
       {more ? <CtxMenu x={more.x} y={more.y} items={moreItems} onPick={pickMore} onClose={() => setMore(null)} /> : null}
 
       {cadmin ? <CategoryAdmin onClose={() => setCadmin(false)} onChanged={bump} /> : null}
+      {fadmin ? <FieldAdmin onClose={() => setFadmin(false)} onChanged={bump} /> : null}
 
       {ask ? (
         <Confirm

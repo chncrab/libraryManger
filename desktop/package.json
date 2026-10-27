@@ -1,6 +1,6 @@
 {
   "name": "booklib",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "私人藏书管理",
@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "node scripts/smoke.mjs",
     "smoke:review": "node scripts/smoke-review.mjs",
+    "smoke:fields": "node scripts/smoke-fields.mjs",
     "dist": "npm run build && electron-builder --win nsis",
     "dist:dir": "npm run build && electron-builder --dir"
   },

@@ -1,5 +1,6 @@
 import type { DB } from "../db";
 import type { BookQuery, BookRow, ListResult, Facets, SortSpec } from "../../shared/types";
+import { customOfBooks } from "./fieldService";
 
 /* 多字段排序：每个 key 对应一个可比较的表达式，方向另加。
    评分与读过日期这类有大量空值，空值统一沉到最后，不随升降序翻面 */
@@ -19,14 +20,28 @@ const ORDER_COL: Record<string, string> = {
 
 const NULL_LAST = new Set(["rating", "read", "year", "index", "grade"]);
 
-export function orderBy(sorts?: SortSpec[]): string {
+/** 自定义字段排序时用的表达式。值表按字段 id 取，id 来自库里不是用户输入 */
+function customOrderExpr(db: DB, key: string, dir: number): string {
+  const f = db.prepare("SELECT id, type FROM fields WHERE key = ? AND deleted_at IS NULL").get(key) as any;
+  if (!f) return "";
+  const col = f.type === "date" ? "v.day" : f.type === "text" || f.type === "longtext" || f.type === "select" || f.type === "multiselect" ? "v.val" : "v.num";
+  const expr = `(SELECT ${col} FROM book_field_values v WHERE v.book_id = b.id AND v.field_id = ${Number(f.id)} ORDER BY v.ord LIMIT 1)`;
+  return `(${expr} IS NULL) ASC, ${expr}${dir === -1 ? " DESC" : " ASC"}`;
+}
+
+export function orderBy(db: DB, sorts?: SortSpec[]): string {
   const list = sorts && sorts.length ? sorts : [{ key: "title", dir: 1 } as SortSpec];
   const parts: string[] = [];
   for (const s of list) {
     const col = ORDER_COL[s.key];
-    if (!col) continue;
-    if (NULL_LAST.has(s.key)) parts.push(`(${col} IS NULL) ASC`);
-    parts.push(col + (s.dir === -1 ? " DESC" : " ASC"));
+    if (col) {
+      if (NULL_LAST.has(s.key)) parts.push(`(${col} IS NULL) ASC`);
+      parts.push(col + (s.dir === -1 ? " DESC" : " ASC"));
+      continue;
+    }
+    /* 不是内建的排序键就去字段表里找，找不到就不排这一条 */
+    const custom = customOrderExpr(db, s.key, s.dir);
+    if (custom) parts.push(custom);
   }
   if (!parts.length) parts.push("b.title COLLATE NOCASE ASC");
   return parts.join(", ");
@@ -74,8 +89,20 @@ function toRow(r: any): BookRow {
     authors: splitList(r.authors_text),
     categories: splitList(r.cats_text),
     states: splitList(r.states_text),
-    reviewGrade: r.review_grade || null
+    reviewGrade: r.review_grade || null,
+    custom: {}
   };
+}
+
+/** 自定义字段的值另外查一次，按批走，不塞进那条大查询里 */
+function attachCustom(db: DB, rows: BookRow[]): BookRow[] {
+  if (!rows.length) return rows;
+  const map = customOfBooks(
+    db,
+    rows.map((r) => r.id)
+  );
+  for (const r of rows) r.custom = map[r.id] || {};
+  return rows;
 }
 
 function ftsQuery(q: string): string {
@@ -173,23 +200,54 @@ export function listBooks(db: DB, q: BookQuery): ListResult {
     if (note) (where.push("b.note LIKE ?"), params.push("%" + note + "%"));
   }
 
+  /* 自定义字段的筛选。一条一个 EXISTS，未填值的不匹配，与左栏那套一致 */
+  if (q.fvals && q.fvals.length) {
+    for (const f of q.fvals) {
+      if (!f || !f.key) continue;
+      const sub = `SELECT 1 FROM book_field_values v JOIN fields ff ON ff.id = v.field_id WHERE v.book_id = b.id AND ff.key = ?`;
+      if (f.op === "yes") {
+        where.push(`EXISTS (${sub} AND v.val = '1')`);
+        params.push(f.key);
+      } else if (f.op === "no") {
+        where.push(`NOT EXISTS (${sub} AND v.val = '1')`);
+        params.push(f.key);
+      } else if (f.op === "between") {
+        where.push(`EXISTS (${sub} AND (v.num BETWEEN ? AND ? OR v.day BETWEEN ? AND ?))`);
+        const a = f.a == null || f.a === "" ? -1e15 : Number(f.a);
+        const b = f.b == null || f.b === "" ? 1e15 : Number(f.b);
+        const da = f.a == null || f.a === "" ? "0000-00-00" : String(f.a);
+        const dbTo = f.b == null || f.b === "" ? "9999-99-99" : String(f.b);
+        params.push(f.key, a, b, da, dbTo);
+      } else if (f.op === "eq" || f.op === "has") {
+        where.push(`EXISTS (${sub} AND v.val = ?)`);
+        params.push(f.key, String(f.a || ""));
+      } else {
+        where.push(`EXISTS (${sub} AND v.val LIKE ?)`);
+        params.push(f.key, "%" + String(f.a || "") + "%");
+      }
+    }
+  }
+
   const sqlWhere = where.length ? " WHERE " + where.join(" AND ") : "";
-  const order = orderBy(q.sorts);
+  const order = orderBy(db, q.sorts);
   const limit = Math.min(Math.max(q.limit || 120, 1), 2000);
   const offset = Math.max(q.offset || 0, 0);
 
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM books b LEFT JOIN series s ON s.id = b.series_id${sqlWhere}`).get(...params) as any).n;
-  const rows = db
-    .prepare(`${SELECT_ROW}${sqlWhere} ORDER BY ${order} LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset)
-    .map(toRow);
+  const rows = attachCustom(
+    db,
+    db
+      .prepare(`${SELECT_ROW}${sqlWhere} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset)
+      .map(toRow)
+  );
 
   return { total, rows };
 }
 
 export function getBook(db: DB, id: string): BookRow | null {
   const r = db.prepare(`${SELECT_ROW} WHERE b.id = ?`).get(id);
-  return r ? toRow(r) : null;
+  return r ? attachCustom(db, [toRow(r)])[0] : null;
 }
 
 export function reviewOf(db: DB, id: string): { md: string; grade: string; happenedAt: string } | null {

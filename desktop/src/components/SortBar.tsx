@@ -1,30 +1,16 @@
 import { useState } from "react";
-import type { SortKey, SortSpec } from "../../shared/types";
-
-export const SORT_LABEL: Record<SortKey, string> = {
-  title: "书名",
-  author: "作者",
-  series: "系列",
-  index: "卷序",
-  rating: "评分",
-  read: "读完时间",
-  year: "出版年",
-  updated: "最近改动",
-  grade: "书评等级"
-};
-
-export const SORT_KEYS = Object.keys(SORT_LABEL) as SortKey[];
+import type { SortSpec } from "../../shared/types";
 
 export const DEFAULT_SORTS: SortSpec[] = [{ key: "title", dir: 1 }];
 
-/** 旧版本存下来的单字段排序转成数组，别让老配置一升级就丢 */
+/* 老配置里可能存着旧键，排序时找不到会被忽略，这里只把形状理正 */
 export function normalizeSorts(v: unknown): SortSpec[] {
   if (Array.isArray(v)) {
-    const out = v.filter((x) => x && SORT_LABEL[x.key as SortKey]) as SortSpec[];
+    const out = v.filter((x) => x && typeof x.key === "string" && (x.dir === 1 || x.dir === -1)) as SortSpec[];
     return out.length ? out : DEFAULT_SORTS;
   }
-  if (typeof v === "string" && SORT_LABEL[v as SortKey]) {
-    return [{ key: v as SortKey, dir: v === "rating" || v === "year" || v === "read" ? -1 : 1 }];
+  if (typeof v === "string" && v) {
+    return [{ key: v, dir: v === "rating" || v === "year" || v === "read" ? -1 : 1 }];
   }
   return DEFAULT_SORTS;
 }
@@ -32,18 +18,23 @@ export function normalizeSorts(v: unknown): SortSpec[] {
 /**
  * 排序条件做成可拖拽的圆片，工具栏与设置面板共用这一套。
  * 点一下翻方向，× 去掉，拖到别的位置就换优先级。
+ * 能排的字段由外部的字段表给，自定义字段建出来就在列表里。
  */
 export default function SortBar({
   sorts,
   onChange,
+  sortables,
   compact = false
 }: {
   sorts: SortSpec[];
   onChange: (s: SortSpec[]) => void;
+  sortables: { key: string; label: string }[];
   compact?: boolean;
 }) {
   const [drag, setDrag] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+
+  const labelOf = (key: string) => sortables.find((s) => s.key === key)?.label || key;
 
   const move = (from: number, to: number) => {
     if (from === to) return;
@@ -53,7 +44,7 @@ export default function SortBar({
     onChange(next);
   };
 
-  const add = (key: SortKey) => {
+  const add = (key: string) => {
     if (sorts.some((s) => s.key === key)) return;
     onChange([...sorts, { key, dir: key === "rating" || key === "read" || key === "year" ? -1 : 1 }]);
     setAddOpen(false);
@@ -75,7 +66,7 @@ export default function SortBar({
           title="拖到别处换优先级，点一下翻方向"
         >
           <b onClick={() => onChange(sorts.map((x, j) => (j === i ? { ...x, dir: x.dir === 1 ? -1 : 1 } : x)))}>
-            {SORT_LABEL[s.key]} {s.dir === 1 ? "↑" : "↓"}
+            {labelOf(s.key)} {s.dir === 1 ? "↑" : "↓"}
           </b>
           {sorts.length > 1 ? (
             <i
@@ -99,12 +90,14 @@ export default function SortBar({
           <>
             <div className="sort-mask" onClick={() => setAddOpen(false)} />
             <div className="sort-pop">
-              {SORT_KEYS.filter((k) => !sorts.some((s) => s.key === k)).map((k) => (
-                <div key={k} className="sort-item" onClick={() => add(k)}>
-                  {SORT_LABEL[k]}
-                </div>
-              ))}
-              {SORT_KEYS.every((k) => sorts.some((s) => s.key === k)) ? <div className="dim">都加上了</div> : null}
+              {sortables
+                .filter((s) => !sorts.some((x) => x.key === s.key))
+                .map((s) => (
+                  <div key={s.key} className="sort-item" onClick={() => add(s.key)}>
+                    {s.label}
+                  </div>
+                ))}
+              {sortables.every((s) => sorts.some((x) => x.key === s.key)) ? <div className="dim">都加上了</div> : null}
             </div>
           </>
         ) : null}

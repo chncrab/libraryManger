@@ -1,5 +1,5 @@
-import type { AdvFilter } from "../../shared/types";
-import { COLUMNS, DEFAULT_HIDDEN } from "../columns";
+import type { AdvFilter, FieldDef, FieldFilter } from "../../shared/types";
+import { DEFAULT_HIDDEN } from "../columns";
 
 /** 工具栏下方浮出的面板，列设置与高级筛选共用外壳 */
 export function ToolPanel({
@@ -36,12 +36,15 @@ export function ToolPanel({
   );
 }
 
+/** 列设置读字段表，字段管理里加的字段这里立刻就有 */
 export function ColumnPanel({
+  fields,
   hidden,
   onChange,
   onClose,
   pos
 }: {
+  fields: FieldDef[];
   hidden: string[];
   onChange: (h: string[]) => void;
   onClose: () => void;
@@ -50,17 +53,18 @@ export function ColumnPanel({
   const toggle = (key: string) => {
     onChange(hidden.includes(key) ? hidden.filter((k) => k !== key) : [...hidden, key]);
   };
+  const list = fields.filter((f) => !f.deletedAt);
   return (
     <ToolPanel title="列设置" hint="点一行显示或隐藏" onClose={onClose} width={230} pos={pos}>
-      {COLUMNS.map((c) => (
+      {list.map((c) => (
         <div
           key={c.key}
-          className={"tp-row" + (c.fixed ? " off" : "") + (hidden.includes(c.key) ? " hide" : "")}
-          onClick={() => !c.fixed && toggle(c.key)}
+          className={"tp-row" + (c.inTable ? "" : " off") + (hidden.includes(c.key) ? " hide" : "")}
+          onClick={() => c.inTable && toggle(c.key)}
         >
-          <span className="tp-tick">{hidden.includes(c.key) ? "" : "✓"}</span>
-          <span>{c.label || "操作"}</span>
-          {c.fixed ? <span className="dim">固定</span> : null}
+          <span className="tp-tick">{c.inTable && !hidden.includes(c.key) ? "✓" : ""}</span>
+          <span>{c.label}</span>
+          {c.inTable ? null : <span className="dim">不出列</span>}
         </div>
       ))}
       <div className="tp-foot">
@@ -77,28 +81,114 @@ export function ColumnPanel({
 
 const num = (v: string): number | null => (v.trim() === "" ? null : Number(v));
 
+/** 一个字段的筛选行，控件按类型分派 */
+function FilterRow({
+  field,
+  cur,
+  onChange
+}: {
+  field: FieldDef;
+  cur: FieldFilter | undefined;
+  onChange: (f: FieldFilter | null) => void;
+}) {
+  const set = (p: Partial<FieldFilter>) => onChange({ ...(cur || { key: field.key, op: "like" }), ...p });
+
+  if (field.type === "switch") {
+    const v = cur ? cur.op : "";
+    return (
+      <div className="tp-line">
+        <button className={"mini xs" + (v === "yes" ? " on" : "")} onClick={() => onChange({ key: field.key, op: "yes" })}>
+          是
+        </button>
+        <button className={"mini xs" + (v === "no" ? " on" : "")} onClick={() => onChange({ key: field.key, op: "no" })}>
+          否
+        </button>
+        <button className={"mini xs" + (v === "" ? " on" : "")} onClick={() => onChange(null)}>
+          不限
+        </button>
+      </div>
+    );
+  }
+
+  if (field.type === "number" || field.type === "rating" || field.type === "date") {
+    const isDate = field.type === "date";
+    return (
+      <div className="tp-line">
+        <input
+          type={isDate ? "date" : "number"}
+          placeholder="从"
+          value={cur?.a ?? ""}
+          onChange={(e) => set({ op: "between", a: e.target.value })}
+        />
+        <span className="dim">到</span>
+        <input
+          type={isDate ? "date" : "number"}
+          placeholder="到"
+          value={cur?.b ?? ""}
+          onChange={(e) => set({ op: "between", b: e.target.value })}
+        />
+      </div>
+    );
+  }
+
+  if (field.type === "select" || field.type === "multiselect") {
+    return (
+      <div className="tp-line">
+        <select value={cur?.a ?? ""} onChange={(e) => (e.target.value ? set({ op: "has", a: e.target.value }) : onChange(null))}>
+          <option value="">不限</option>
+          {field.options.map((o) => (
+            <option key={o.id} value={o.name}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tp-line">
+      <input
+        placeholder="含关键词"
+        value={cur?.a ?? ""}
+        onChange={(e) => (e.target.value ? set({ op: "like", a: e.target.value }) : onChange(null))}
+      />
+    </div>
+  );
+}
+
 export function AdvPanel({
   adv,
+  fields,
   onChange,
   onClose,
   pos
 }: {
   adv: AdvFilter;
+  fields: FieldDef[];
   onChange: (a: AdvFilter) => void;
   onClose: () => void;
   pos?: { x: number; y: number } | null;
 }) {
   const set = (p: Partial<AdvFilter>) => onChange({ ...adv, ...p });
+  const fvals = adv.fvals || [];
+  const setField = (key: string, f: FieldFilter | null) => {
+    const rest = fvals.filter((x) => x.key !== key);
+    set({ fvals: f ? [...rest, f] : rest });
+  };
   const dirty =
     adv.ratingMin != null ||
     adv.ratingMax != null ||
     adv.yearFrom != null ||
     adv.yearTo != null ||
     adv.hasReview !== null ||
-    !!adv.note.trim();
+    !!adv.note.trim() ||
+    fvals.length > 0;
+
+  const filtrable = fields.filter((f) => !f.deletedAt && f.filterable);
 
   return (
-    <ToolPanel title="高级筛选" hint="留空表示不限" onClose={onClose} width={300} pos={pos}>
+    <ToolPanel title="高级筛选" hint="留空表示不限" onClose={onClose} width={312} pos={pos}>
       <div className="tp-lab">评分区间</div>
       <div className="tp-line">
         <input
@@ -156,12 +246,24 @@ export function AdvPanel({
         <input value={adv.note} placeholder="例如 限定版" onChange={(e) => set({ note: e.target.value })} />
       </div>
 
+      {filtrable.length ? (
+        <>
+          <div className="tp-lab">字段</div>
+          {filtrable.map((f) => (
+            <div key={f.key} className="tp-field">
+              <span className="tp-fname">{f.label}</span>
+              <FilterRow field={f} cur={fvals.find((x) => x.key === f.key)} onChange={(x) => setField(f.key, x)} />
+            </div>
+          ))}
+        </>
+      ) : null}
+
       <div className="tp-foot">
         <button
           className="mini xs"
           disabled={!dirty}
           onClick={() =>
-            onChange({ ratingMin: null, ratingMax: null, yearFrom: null, yearTo: null, hasReview: null, note: "" })
+            onChange({ ratingMin: null, ratingMax: null, yearFrom: null, yearTo: null, hasReview: null, note: "", fvals: [] })
           }
         >
           全部清空
