@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BooklibApi, BookPatch, BookQuery, ReviewInput, ReviewPatch } from "../shared/types";
+import type { BooklibApi, BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch } from "../shared/types";
 
 const api: BooklibApi = {
   info: () => ipcRenderer.invoke("app:info"),
@@ -67,7 +67,19 @@ const api: BooklibApi = {
   dataInfo: () => ipcRenderer.invoke("data:info"),
 
   getSetting: (key: string) => ipcRenderer.invoke("settings:get", key),
-  setSetting: (key: string, value: string) => ipcRenderer.invoke("settings:set", key, value)
+  setSetting: (key: string, value: string) => ipcRenderer.invoke("settings:set", key, value),
+
+  listFields: (includeDeleted?: boolean) => ipcRenderer.invoke("fields:list", !!includeDeleted),
+  createField: (p: FieldInput) => ipcRenderer.invoke("fields:create", p),
+  updateField: (id: number, p: FieldPatch) => ipcRenderer.invoke("fields:update", id, p),
+  changeFieldType: (id: number, type: FieldType) => ipcRenderer.invoke("fields:type", id, type),
+  removeField: (id: number) => ipcRenderer.invoke("fields:remove", id),
+  restoreField: (id: number) => ipcRenderer.invoke("fields:restore", id),
+  moveField: (id: number, dir: -1 | 1) => ipcRenderer.invoke("fields:move", id, dir),
+  addFieldOption: (fieldId: number, name: string) => ipcRenderer.invoke("fields:addOption", fieldId, name),
+  renameFieldOption: (id: number, name: string) => ipcRenderer.invoke("fields:renameOption", id, name),
+  removeFieldOption: (id: number) => ipcRenderer.invoke("fields:removeOption", id),
+  pickFieldImage: (fieldKey: string, bookId: string) => ipcRenderer.invoke("fields:pickImage", fieldKey, bookId)
 };
 
 contextBridge.exposeInMainWorld("api", api);

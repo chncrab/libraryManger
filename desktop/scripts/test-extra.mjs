@@ -25,7 +25,7 @@ fs.copyFileSync(src, file);
 process.env.LIBRARY_DB = file;
 
 const { openDb } = require("../dist-electron/electron/db/index.js");
-const { listBooks } = require("../dist-electron/electron/services/bookService.js");
+const { listBooks, getBook } = require("../dist-electron/electron/services/bookService.js");
 const { listSeries, seriesBooks, seriesReviewOf, seriesLabel, seriesAuthor } = require("../dist-electron/electron/services/seriesService.js");
 const rv = require("../dist-electron/electron/services/reviewService.js");
 const io = require("../dist-electron/electron/services/reviewIo.js");
@@ -74,7 +74,10 @@ const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").a
 t("有 settings 表", tables.includes("settings"));
 t("有 cover_history 表", tables.includes("cover_history"));
 const ver = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
-t("迁移到 v4", ver === 4, "当前 v" + ver);
+t("迁移跑到最新", ver >= 6, "当前 v" + ver);
+t("有 fields 表", tables.includes("fields"));
+t("有 field_options 表", tables.includes("field_options"));
+t("有 book_field_values 表", tables.includes("book_field_values"));
 
 console.log("\n[2] 多字段排序");
 const byRating = listBooks(db, { sorts: [{ key: "rating", dir: -1 }, { key: "title", dir: 1 }], limit: 2000 }).rows;
@@ -632,6 +635,93 @@ t("文件名跟着书名变", f3new.includes("改名测试"), f3new);
 t("旧名收走", !fs.existsSync(path.join(rdir, f3)), f3);
 t("是一次重命名", inode(f3new) === ino3, ino3 + " → " + inode(f3new));
 updateBook(db, rv3.book_id, { title: title3 });
+
+/* ---- 字段体系 ---- */
+console.log("\n[9] 字段体系");
+const fsv = require("../dist-electron/electron/services/fieldService.js");
+const defs = fsv.listFields(db);
+const builtinKeys = [
+  "grade", "title", "subtitle", "originalTitle", "originalSubtitle", "authors", "media", "series",
+  "index", "country", "publishDate", "read", "readDate", "rating", "categories", "states", "ebook", "note"
+];
+t("十八个内建字段都登记了", builtinKeys.every((k) => defs.some((d) => d.key === k)), defs.length + " 个");
+t("内建字段的类型对得上", defs.find((d) => d.key === "publishDate").type === "date" && defs.find((d) => d.key === "read").type === "switch");
+t("内建字段不许改类型", fsv.changeFieldType(db, defs.find((d) => d.key === "title").id, "number").ok === false);
+t("内建字段不许删", fsv.removeField(db, defs.find((d) => d.key === "title").id).ok === false);
+
+/* 新建一个日期字段，写值后应归一成 yyyy-mm-dd */
+const dayField = fsv.createField(db, { label: "测试日期", type: "date" });
+const dayKey = db.prepare("SELECT key FROM fields WHERE id = ?").get(dayField.id).key;
+const oneBook = listBooks(db, { limit: 1 }).rows[0];
+fsv.setCustom(db, oneBook.id, { [dayKey]: ["2020-5-3"] });
+const dayRow = db.prepare("SELECT val, day FROM book_field_values WHERE book_id = ? AND field_id = ?").get(oneBook.id, dayField.id);
+t("日期值归一成 yyyy-mm-dd", dayRow && dayRow.day === "2020-05-03", dayRow ? dayRow.day : "没写进去");
+t("读回来带着自定义字段", (getBook(db, oneBook.id).custom[dayKey] || [])[0] === "2020-05-03");
+
+/* 按这个字段排序不报错，且排在最前的是填了值的那本 */
+const sorted = listBooks(db, { sorts: [{ key: dayKey, dir: 1 }], limit: 5 }).rows;
+t("能按自定义字段排序", sorted.length > 0 && sorted[0].id === oneBook.id, "第一行 " + (sorted[0] ? sorted[0].id === oneBook.id : false));
+
+/* 文本字段里放非数字，改数字类型要被挡住并列清单 */
+const txtField = fsv.createField(db, { label: "测试文本", type: "text" });
+const txtKey = db.prepare("SELECT key FROM fields WHERE id = ?").get(txtField.id).key;
+const twoBooks = listBooks(db, { limit: 2 }).rows;
+fsv.setCustom(db, twoBooks[0].id, { [txtKey]: ["不是数字"] });
+const typeBad = fsv.changeFieldType(db, txtField.id, "number");
+t("改类型认不了就拒绝", typeBad.ok === false && (typeBad.rejected || []).length === 1, typeBad.msg || "");
+t("拒绝时值没被清掉", (getBook(db, twoBooks[0].id).custom[txtKey] || [])[0] === "不是数字");
+const typeOk = fsv.changeFieldType(db, txtField.id, "longtext");
+t("改成认得的类型放行", typeOk.ok === true, typeOk.msg || "");
+
+/* 单选字段改选项名，已经用这个名字的值要跟着改 */
+const selField = fsv.createField(db, { label: "测试单选", type: "select", options: ["甲", "乙"] });
+const selKey = db.prepare("SELECT key FROM fields WHERE id = ?").get(selField.id).key;
+fsv.setCustom(db, twoBooks[0].id, { [selKey]: ["甲"] });
+const optA = db.prepare("SELECT id FROM field_options WHERE field_id = ? AND name = '甲'").get(selField.id);
+fsv.renameFieldOption(db, optA.id, "丙");
+t("改选项名带着值一起改", (getBook(db, twoBooks[0].id).custom[selKey] || [])[0] === "丙");
+
+/* 多选存三项 */
+const mulField = fsv.createField(db, { label: "测试多选", type: "multiselect", options: ["一", "二", "三"] });
+const mulKey = db.prepare("SELECT key FROM fields WHERE id = ?").get(mulField.id).key;
+fsv.setCustom(db, twoBooks[0].id, { [mulKey]: ["一", "二", "三"] });
+t("多选存满三项", (getBook(db, twoBooks[0].id).custom[mulKey] || []).length === 3);
+
+/* 开关关掉就是没有这一行 */
+const swField = fsv.createField(db, { label: "测试开关", type: "switch" });
+const swKey = db.prepare("SELECT key FROM fields WHERE id = ?").get(swField.id).key;
+fsv.setCustom(db, twoBooks[0].id, { [swKey]: ["1"] });
+t("开关打开有一行", (getBook(db, twoBooks[0].id).custom[swKey] || []).length === 1);
+fsv.setCustom(db, twoBooks[0].id, { [swKey]: [] });
+t("开关关掉就没这行", (getBook(db, twoBooks[0].id).custom[swKey] || []).length === 0);
+
+/* 删除字段值留着，恢复后回来 */
+fsv.removeField(db, mulField.id);
+t("删掉的字段不在清单里", !fsv.listFields(db).some((f) => f.id === mulField.id));
+t("删掉后值还在库里", (db.prepare("SELECT COUNT(*) AS n FROM book_field_values WHERE field_id = ?").get(mulField.id).n) === 3);
+fsv.restoreField(db, mulField.id);
+t("恢复后值回来", (getBook(db, twoBooks[0].id).custom[mulKey] || []).length === 3);
+
+/* 勾上可搜索之后，全库搜得到 */
+fsv.setCustom(db, twoBooks[0].id, { [txtKey]: ["孤本甲乙丙"] });
+fsv.updateField(db, txtField.id, { searchable: true });
+const hit = listBooks(db, { q: "孤本甲乙丙", limit: 10 }).rows;
+t("自定义字段能进搜索", hit.some((r) => r.id === twoBooks[0].id), "命中 " + hit.length);
+fsv.updateField(db, txtField.id, { searchable: false });
+
+/* 高级筛选按字段过 */
+fsv.setCustom(db, twoBooks[0].id, { [selKey]: ["丙"] });
+const filtered = listBooks(db, { fvals: [{ key: selKey, op: "eq", a: "丙" }], limit: 10 }).rows;
+t("按单选字段筛选", filtered.length === 1 && filtered[0].id === twoBooks[0].id, "命中 " + filtered.length);
+const filteredNo = listBooks(db, { fvals: [{ key: selKey, op: "no", a: "" }], limit: 2000 }).total;
+t("按没填过筛是反过来的", filteredNo >= listBooks(db, { limit: 2000 }).total - 1, "剩下 " + filteredNo);
+
+/* 清理测试字段 */
+for (const f of [dayField, txtField, selField, mulField, swField]) {
+  db.prepare("DELETE FROM book_field_values WHERE field_id = ?").run(f.id);
+  db.prepare("DELETE FROM field_options WHERE field_id = ?").run(f.id);
+  db.prepare("DELETE FROM fields WHERE id = ?").run(f.id);
+}
 
 /* 收尾：清掉临时目录与这轮的改动 */
 fs.rmSync(tmp, { recursive: true, force: true });

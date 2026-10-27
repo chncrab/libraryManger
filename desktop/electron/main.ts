@@ -22,6 +22,18 @@ import {
   reviewFileName
 } from "./services/reviewService";
 import { listSeries, seriesBooks, seriesReviewOf } from "./services/seriesService";
+import {
+  listFields,
+  createField,
+  updateField,
+  changeFieldType,
+  removeField,
+  restoreField,
+  moveField,
+  addFieldOption,
+  renameFieldOption,
+  removeFieldOption
+} from "./services/fieldService";
 import { setCoverFromFile, resetCover } from "./services/coverService";
 import { getSetting, setSetting } from "./services/settingsService";
 import { autoBackup, backupTo, listBackups } from "./services/backupService";
@@ -47,7 +59,7 @@ import {
   copyLibrary
 } from "./services/libraryService";
 import type { LibraryPaths } from "./services/libraryService";
-import type { BookPatch, BookQuery, ReviewInput, ReviewPatch } from "../shared/types";
+import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch } from "../shared/types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "";
 
@@ -425,6 +437,44 @@ function registerIpc(): void {
   ipcMain.handle("cats:parent", (_e, id: number, parentId: number | null) => setCategoryParent(D(), id, parentId ?? null));
   ipcMain.handle("cats:remove", (_e, id: number) => removeCategory(D(), id));
   ipcMain.handle("cats:move", (_e, id: number, dir: -1 | 1) => moveCategory(D(), id, dir));
+
+  /* 字段定义。表格列、详情行、排序键、筛选控件全靠这一组 */
+  ipcMain.handle("fields:list", (_e, includeDeleted?: boolean) => listFields(D(), !!includeDeleted));
+  ipcMain.handle("fields:create", (_e, p: FieldInput) => createField(D(), p || ({ label: "" } as FieldInput)));
+  ipcMain.handle("fields:update", (_e, id: number, p: FieldPatch) => updateField(D(), id, p || {}));
+  ipcMain.handle("fields:type", (_e, id: number, type: FieldType) => changeFieldType(D(), id, type));
+  ipcMain.handle("fields:remove", (_e, id: number) => removeField(D(), id));
+  ipcMain.handle("fields:restore", (_e, id: number) => restoreField(D(), id));
+  ipcMain.handle("fields:move", (_e, id: number, dir: -1 | 1) => moveField(D(), id, dir));
+  ipcMain.handle("fields:addOption", (_e, fieldId: number, name: string) => addFieldOption(D(), fieldId, name));
+  ipcMain.handle("fields:renameOption", (_e, id: number, name: string) => renameFieldOption(D(), id, name));
+  ipcMain.handle("fields:removeOption", (_e, id: number) => removeFieldOption(D(), id));
+  /* 图片类型字段选一张本地图。文件名由字段与书派生，换图时同名覆盖，不留旧图 */
+  ipcMain.handle("fields:pickImage", async (_e, fieldKey: string, bookId: string) => {
+    const r = await dialog.showOpenDialog(win!, {
+      title: "选择图片",
+      properties: ["openFile"],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "gif", "bmp"] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, msg: "没有选择图片" };
+    const dir = coverDir();
+    if (!dir) return { ok: false, msg: "还没有打开书库" };
+    const src = r.filePaths[0];
+    const ext = (path.extname(src) || ".jpg").toLowerCase();
+    const base = ("字段-" + fieldKey + "-" + String(bookId || "x").slice(0, 8)).replace(/[\\/:*?"<>|]/g, "_");
+    const name = base + ext;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      /* 扩展名换过时上一张会留在原地，顺手清掉同名的其他后缀 */
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith(base + ".") && f !== name) fs.rmSync(path.join(dir, f), { force: true });
+      }
+      fs.copyFileSync(src, path.join(dir, name));
+    } catch (e) {
+      return err(e);
+    }
+    return { ok: true, name };
+  });
 
   ipcMain.handle("reviews:create", (_e, p: ReviewInput) => {
     const r = createReview(D(), p || {});

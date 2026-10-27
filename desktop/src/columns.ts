@@ -1,35 +1,47 @@
-/** 表格列定义。列设置面板与表头共用，改一处两边一致。
- *  顺序与详情抽屉的字段一一对应，详情里能改的条目表格里都得有，
- *  只有备注是长文本，留在详情里改 */
+import type { FieldDef, FieldType } from "../shared/types";
+
+/** 表格列。列定义不再写死，从字段表生成，改一处两边一致。
+ *  顺序与详情抽屉的字段一一对应，详情里能改的条目表格里都得有 */
 export interface ColDef {
   key: string;
   label: string;
-  /** 固定宽度的列，其余自适应 */
   width?: number;
   /** 不能隐藏的列，比如末列的操作入口 */
   fixed?: boolean;
+  type?: FieldType;
+  builtin?: number;
 }
 
-export const COLUMNS: ColDef[] = [
-  { key: "grade", label: "书评", width: 44 },
-  { key: "title", label: "书名", width: 224 },
-  { key: "subtitle", label: "副标题", width: 150 },
-  { key: "originalTitle", label: "原作名", width: 200 },
-  { key: "originalSubtitle", label: "原作副标题", width: 170 },
-  { key: "authors", label: "作者", width: 116 },
-  { key: "media", label: "媒介", width: 66 },
-  { key: "series", label: "系列", width: 168 },
-  { key: "index", label: "卷", width: 54 },
-  { key: "country", label: "国籍", width: 70 },
-  { key: "publishDate", label: "出版日期", width: 100 },
-  { key: "read", label: "已读", width: 46 },
-  { key: "readDate", label: "阅读日期", width: 100 },
-  { key: "rating", label: "评分", width: 62 },
-  { key: "categories", label: "分类", width: 168 },
-  { key: "states", label: "实体书", width: 80 },
-  { key: "ebook", label: "电子书", width: 72 },
-  { key: "more", label: "", width: 40, fixed: true }
-];
+/** 末列固定，放右键菜单的入口，不属于字段 */
+export const MORE_COL: ColDef = { key: "more", label: "", width: 40, fixed: true };
 
 /* 默认全部显示。想让表格窄一点在列设置里隐藏，选择会记住 */
 export const DEFAULT_HIDDEN: string[] = [];
+
+/** 字段表 → 表格列。inTable 为假的字段（备注这类长文本）不出列 */
+export function colsFromFields(fields: FieldDef[], hidden: string[]): ColDef[] {
+  const cols: ColDef[] = fields
+    .filter((f) => f.inTable && !f.deletedAt)
+    .map((f) => ({
+      key: f.key,
+      label: f.label,
+      width: f.width || undefined,
+      type: f.type,
+      builtin: f.builtin
+    }));
+  return [...cols.filter((c) => !hidden.includes(c.key)), MORE_COL];
+}
+
+/** 排序键与标签。长文本与图片排不了，其余都能 */
+export function sortablesOf(fields: FieldDef[]): { key: string; label: string }[] {
+  const extra = [
+    { key: "author", label: "作者" },
+    { key: "updated", label: "最近改动" },
+    { key: "year", label: "出版年" }
+  ];
+  const mine = fields
+    .filter((f) => !f.deletedAt && f.type !== "longtext" && f.type !== "image")
+    .map((f) => ({ key: f.key, label: f.label }));
+  const seen = new Set(mine.map((m) => m.key));
+  return [...mine, ...extra.filter((e) => !seen.has(e.key))];
+}

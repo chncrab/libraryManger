@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import api, { coverUrl } from "../api";
-import type { BookPatch, BookRow, CatNode } from "../../shared/types";
+import type { BookPatch, BookRow, CatNode, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
-import { MultiPick, SinglePick } from "./Pickers";
+import { FieldEditor, patchOf, valuesOf } from "./FieldRenderer";
 
 interface Props {
   id: string | null;
+  /** 字段定义，详情里的每一行都由它生成 */
+  fields: FieldDef[];
   onClose: () => void;
   onSaved: () => void;
 }
@@ -15,12 +17,8 @@ interface Loaded {
   review: { md: string; grade: string; happenedAt: string } | null;
 }
 
-const STATES = ["实体", "私印", "预定中", "购物车", "无"];
-const EBOOK = ["有", "无"];
-const MEDIA = ["小说", "漫画"];
-
 /* 详情是右侧抽屉，点外侧遮罩或按 Esc 收起，和 demo 一致；字段全部可直接改，改完自动落库 */
-export default function DetailPanel({ id, onClose, onSaved }: Props) {
+export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
   const [data, setData] = useState<Loaded | null>(null);
 
   useEffect(() => {
@@ -56,6 +54,7 @@ export default function DetailPanel({ id, onClose, onSaved }: Props) {
           <Body
             key={data.book.id}
             data={data}
+            fields={fields}
             onClose={onClose}
             onSaved={onSaved}
             onPatched={(nb) => setData((d) => (d ? { ...d, book: nb } : d))}
@@ -68,11 +67,13 @@ export default function DetailPanel({ id, onClose, onSaved }: Props) {
 
 function Body({
   data,
+  fields,
   onClose,
   onSaved,
   onPatched
 }: {
   data: Loaded;
+  fields: FieldDef[];
   onClose: () => void;
   onSaved: () => void;
   onPatched: (b: BookRow) => void;
@@ -103,6 +104,16 @@ function Body({
     flash("已保存");
   };
 
+  /* 某个字段改了就提交，内建走原有补丁键，自定义走 custom */
+  const put = (f: FieldDef, vals: string[]) => {
+    const p = patchOf(f, vals);
+    if (f.patchKey === "isRead" && vals.length && !b.readDate) {
+      commit({ ...p, readDate: today() });
+      return;
+    }
+    commit(p);
+  };
+
   const changeCover = async () => {
     const r = await api.pickCover(b.id);
     if (!r.ok) {
@@ -125,6 +136,54 @@ function Body({
     if (d) onPatched(d.book);
     onSaved();
     flash("已撤销自定义封面");
+  };
+
+  const usable = fields.filter((f) => !f.deletedAt && f.builtin !== 3);
+  const head = usable.filter((f) => f.key === "title" || f.key === "subtitle");
+  const rest = usable.filter((f) => f.key !== "title" && f.key !== "subtitle");
+
+  const editor = (f: FieldDef) => (
+    <FieldEditor
+      key={f.key}
+      field={f}
+      values={valuesOf(f, b)}
+      bookId={b.id}
+      pickAll={f.patchKey === "categories" ? cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })) : undefined}
+      onCommit={(v) => put(f, v)}
+    />
+  );
+
+  /* 系列与卷、已读与阅读日期在原界面里各占一行放两个控件，字段驱动之后照旧并排 */
+  const PAIRS: Record<string, string[]> = { series: ["index"], read: ["readDate"] };
+  const merged = new Set(Object.values(PAIRS).flat());
+  const row = (f: FieldDef) => {
+    const mates = (PAIRS[f.key] || []).map((k) => rest.find((x) => x.key === k)).filter(Boolean) as FieldDef[];
+    if (mates.length) {
+      return (
+        <Row key={f.key} label={f.label}>
+          <div className="drow2">
+            {editor(f)}
+            {mates.map((m) => editor(m))}
+          </div>
+        </Row>
+      );
+    }
+    /* 评分旁边那句范围提示是原界面就有的，字段驱动之后跟着字段走 */
+    if (f.patchKey === "rating") {
+      return (
+        <Row key={f.key} label={f.label}>
+          <div className="drow2">
+            {editor(f)}
+            <span className="dim">0 到 10，空着算未评分</span>
+          </div>
+        </Row>
+      );
+    }
+    return (
+      <Row key={f.key} label={f.label}>
+        {editor(f)}
+      </Row>
+    );
   };
 
   return (
@@ -152,111 +211,16 @@ function Body({
             </div>
           </div>
           <div className="dfields">
-            <Field label="书名" value={b.title} onCommit={(v) => commit({ title: v })} />
-            <Field label="副标题" value={b.subtitle} onCommit={(v) => commit({ subtitle: v })} />
+            {head.map((f) => (
+              <div key={f.key} className="dhead-field">
+                <label className="dlab">{f.label}</label>
+                <FieldEditor field={f} values={valuesOf(f, b)} bookId={b.id} onCommit={(v) => put(f, v)} />
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="kv edit">
-          <Row label="原作名">
-            <Field value={b.originalTitle} onCommit={(v) => commit({ originalTitle: v })} />
-          </Row>
-          <Row label="原作副标题">
-            <Field value={b.originalSubtitle} onCommit={(v) => commit({ originalSubtitle: v })} />
-          </Row>
-          <Row label="作者">
-            <Field
-              value={b.authors.join("、")}
-              placeholder="多位用、分隔"
-              onCommit={(v) =>
-                commit({
-                  authors: v
-                    .split(/[、,，]/)
-                    .map((s) => s.trim())
-                    .filter(Boolean)
-                })
-              }
-            />
-          </Row>
-          <Row label="媒介">
-            <SinglePick options={MEDIA} value={b.mediaType} title="小说或漫画" onCommit={(v) => commit({ mediaType: v })} />
-          </Row>
-          <Row label="系列">
-            <div className="drow2">
-              <Field value={b.seriesName} placeholder="不属于系列就留空" onCommit={(v) => commit({ seriesName: v })} />
-              <Field
-                className="num"
-                value={b.seriesIndex == null ? "" : String(b.seriesIndex)}
-                placeholder="册"
-                onCommit={(v) => commit({ seriesIndex: v.trim() ? Number(v) : null })}
-              />
-            </div>
-          </Row>
-          <Row label="国籍">
-            <Field value={b.country} onCommit={(v) => commit({ country: v })} />
-          </Row>
-          <Row label="出版日期">
-            <input type="date" value={toDate(b.publishDate)} onChange={(e) => commit({ publishDate: e.target.value })} />
-          </Row>
-          <Row label="已读">
-            <div className="drow2">
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={b.isRead}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    commit({ isRead: on, readDate: on && !b.readDate ? today() : b.readDate });
-                  }}
-                />
-                <span>读过</span>
-              </label>
-              <input type="date" value={toDate(b.readDate)} onChange={(e) => commit({ readDate: e.target.value })} />
-            </div>
-          </Row>
-          <Row label="评分">
-            <div className="drow2">
-              <input
-                className="num"
-                type="number"
-                step="0.1"
-                min="0"
-                max="10"
-                defaultValue={b.rating == null ? "" : b.rating}
-                onBlur={(e) => {
-                  const v = e.target.value === "" ? null : Number(e.target.value);
-                  if (v !== (b.rating == null ? null : b.rating)) commit({ rating: v });
-                }}
-              />
-              <span className="dim">0 到 10，空着算未评分</span>
-            </div>
-          </Row>
-          <Row label="分类">
-            <MultiPick
-              all={cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId }))}
-              picked={b.categories}
-              onCommit={(names) => commit({ categories: names })}
-            />
-          </Row>
-          <Row label="实体书">
-            <MultiPick
-              all={STATES.map((s) => ({ id: s, name: s, parentId: null }))}
-              picked={b.states}
-              onCommit={(names) => commit({ states: names })}
-            />
-          </Row>
-          <Row label="电子书">
-            <SinglePick
-              options={EBOOK}
-              value={b.ebookState === "有" ? "有" : "无"}
-              title="有电子版还是没有"
-              onCommit={(v) => commit({ ebookState: v })}
-            />
-          </Row>
-          <Row label="备注">
-            <textarea rows={3} defaultValue={b.note} onBlur={(e) => commit({ note: e.target.value })} />
-          </Row>
-        </div>
+        <div className="kv edit">{rest.filter((f) => !merged.has(f.key)).map(row)}</div>
 
         {data.review && data.review.md ? (
           <>
@@ -276,44 +240,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span className="ctl">{children}</span>
     </div>
   );
-}
-
-function Field({
-  label,
-  value,
-  placeholder,
-  className,
-  onCommit
-}: {
-  label?: string;
-  value: string;
-  placeholder?: string;
-  className?: string;
-  onCommit: (v: string) => void;
-}) {
-  return (
-    <>
-      {label ? <label className="dlab">{label}</label> : null}
-      <input
-        className={className}
-        defaultValue={value}
-        placeholder={placeholder}
-        onBlur={(e) => {
-          if (e.target.value !== value) onCommit(e.target.value);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-      />
-    </>
-  );
-}
-
-/* <input type=date> 只吃 yyyy-mm-dd，源数据里有 2020-05 这种，截前 10 位再补零 */
-function toDate(v: string): string {
-  const m = String(v || "").match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
-  if (!m) return "";
-  return m[1] + "-" + m[2].padStart(2, "0") + "-" + (m[3] || "01").padStart(2, "0");
 }
 
 function today(): string {

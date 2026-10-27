@@ -2,21 +2,109 @@
 
 export type MediaType = "小说" | "漫画";
 
-export type SortKey =
-  | "title"
-  | "author"
-  | "series"
-  | "index"
-  | "rating"
-  | "read"
-  | "year"
-  | "updated"
-  | "grade";
+/* 排序键不再写死，自定义字段建出来就能拿来排 */
+export type SortKey = string;
 
 export interface SortSpec {
   key: SortKey;
   /** 1 升序，-1 降序 */
   dir: 1 | -1;
+}
+
+/* ---- 字段定义 ---- */
+
+/** 十种字段类型。控件、排序依据、筛选方式都按它分派 */
+export type FieldType =
+  | "text"
+  | "longtext"
+  | "number"
+  | "date"
+  | "switch"
+  | "rating"
+  | "select"
+  | "multiselect"
+  | "image"
+  | "ref";
+
+export const FIELD_TYPES: { type: FieldType; label: string }[] = [
+  { type: "text", label: "文本" },
+  { type: "longtext", label: "长文本" },
+  { type: "number", label: "数字" },
+  { type: "date", label: "日期" },
+  { type: "switch", label: "是否" },
+  { type: "rating", label: "评分" },
+  { type: "select", label: "单选" },
+  { type: "multiselect", label: "多选" },
+  { type: "image", label: "图片" },
+  { type: "ref", label: "关联" }
+];
+
+export interface FieldOption {
+  id: number;
+  name: string;
+  color: string;
+  ord: number;
+}
+
+/** 字段定义。builtin 0 自定义，1 对应 books 表某一列，2 内建多对多，3 派生只读 */
+export interface FieldDef {
+  id: number;
+  key: string;
+  label: string;
+  type: FieldType;
+  builtin: number;
+  col: string;
+  /** 内建字段提交时用的补丁键，自定义字段为空，走 custom */
+  patchKey: string;
+  width: number;
+  ord: number;
+  inTable: boolean;
+  searchable: boolean;
+  filterable: boolean;
+  deletedAt: string | null;
+  /** 有多少本书填了这一项，字段管理页显示，删除前据此提示 */
+  filled: number;
+  options: FieldOption[];
+}
+
+export interface FieldInput {
+  label: string;
+  type: FieldType;
+  options?: string[];
+  inTable?: boolean;
+  searchable?: boolean;
+  filterable?: boolean;
+  width?: number;
+}
+
+export interface FieldPatch {
+  label?: string;
+  inTable?: boolean;
+  searchable?: boolean;
+  filterable?: boolean;
+  width?: number;
+}
+
+/** 改类型时拒绝的条目，界面上列出来给人看，不静默清空 */
+export interface FieldReject {
+  bookId: string;
+  title: string;
+  value: string;
+}
+
+export interface FieldResult {
+  ok: boolean;
+  id?: number;
+  msg?: string;
+  rejected?: FieldReject[];
+}
+
+/** 自定义字段的筛选条件。op 决定用 val 还是 num 还是 day 去比 */
+export interface FieldFilter {
+  key: string;
+  op: "like" | "between" | "eq" | "has" | "yes" | "no";
+  a?: string;
+  b?: string;
 }
 
 export interface BookRow {
@@ -43,6 +131,8 @@ export interface BookRow {
   categories: string[];
   states: string[];
   reviewGrade: string | null;
+  /** 自定义字段的值，一律给数组，多选就是多个元素。键是字段 key */
+  custom: Record<string, string[]>;
 }
 
 /** 高级筛选的区间与存在性条件，面板里填，空值表示不限 */
@@ -55,6 +145,8 @@ export interface AdvFilter {
   hasReview: boolean | null;
   /** 备注关键词 */
   note: string;
+  /** 自定义字段的筛选条件 */
+  fvals: FieldFilter[];
 }
 
 export const EMPTY_ADV: AdvFilter = {
@@ -63,7 +155,8 @@ export const EMPTY_ADV: AdvFilter = {
   yearFrom: null,
   yearTo: null,
   hasReview: null,
-  note: ""
+  note: "",
+  fvals: []
 };
 
 export interface BookQuery {
@@ -79,6 +172,8 @@ export interface BookQuery {
   /** 多字段排序，前一条相同再比下一条；不传则按书名 */
   sorts?: SortSpec[];
   adv?: AdvFilter;
+  /** 自定义字段的筛选条件，一条一个 EXISTS */
+  fvals?: FieldFilter[];
   offset?: number;
   limit?: number;
 }
@@ -237,6 +332,8 @@ export interface BookPatch {
   authors?: string[];
   categories?: string[];
   states?: string[];
+  /** 自定义字段的值，键是字段 key，空数组表示清空。传了哪个键就整组重写哪个 */
+  custom?: Record<string, string[]>;
 }
 
 export interface CatNode {
@@ -343,4 +440,19 @@ export interface BooklibApi {
   /** 通用键值设置，主题、列设置、排序都存这里 */
   getSetting(key: string): Promise<string>;
   setSetting(key: string, value: string): Promise<boolean>;
+
+  /** 字段定义。表格列、详情行、排序键、筛选控件都从这里取 */
+  listFields(includeDeleted?: boolean): Promise<FieldDef[]>;
+  createField(p: FieldInput): Promise<FieldResult>;
+  updateField(id: number, p: FieldPatch): Promise<FieldResult>;
+  /** 改类型，解析不了的值会返回 rejected 清单，不清空 */
+  changeFieldType(id: number, type: FieldType): Promise<FieldResult>;
+  removeField(id: number): Promise<FieldResult>;
+  restoreField(id: number): Promise<FieldResult>;
+  moveField(id: number, dir: -1 | 1): Promise<FieldResult>;
+  addFieldOption(fieldId: number, name: string): Promise<FieldResult>;
+  renameFieldOption(id: number, name: string): Promise<FieldResult>;
+  removeFieldOption(id: number): Promise<FieldResult>;
+  /** 图片类型字段选一张本地图，落进书库的 covers 目录，返回值就是文件名 */
+  pickFieldImage(fieldKey: string, bookId: string): Promise<{ ok: boolean; name?: string; msg?: string } | null>;
 }
