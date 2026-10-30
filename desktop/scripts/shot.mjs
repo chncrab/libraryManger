@@ -85,6 +85,46 @@ for (const act of acts) {
   } else if (act === "rvedit") {
     await evalJs("(() => { const b = [...document.querySelectorAll('.rvm-h .mini')].find(x => x.textContent === '编辑'); if (b) b.click(); })()");
     await wait(700);
+  } else if (act === "csearch") {
+    /* 详情里点「搜封面」，等候选图下来 */
+    await clickText(".dcacts .mini", "搜封面");
+    await wait(2600);
+  } else if (act === "cbatch") {
+    /* 顶栏更多 → 批量找封面… */
+    await evalJs(`(() => { const b = [...document.querySelectorAll('.topbar .mini')].find(x => x.textContent.includes('更多')); if (b) b.click(); })()`);
+    await wait(500);
+    await clickText(".ctx-i", "批量找封面…");
+    await wait(900);
+  } else if (act === "cbatchrun") {
+    /* 点开始识别，等它跑完再截图；假数据下六十几本几秒就完 */
+    await clickText(".cbatch .cb-top .mini", "开始识别");
+    for (let i = 0; i < 120; i++) {
+      const st = await evalJs("(async () => JSON.stringify(await window.api.coverBatchState()))()");
+      let running = true;
+      try {
+        running = JSON.parse(st).running;
+      } catch {
+        running = false;
+      }
+      if (!running) break;
+      await wait(300);
+    }
+    await wait(600);
+  } else if (act === "cbatchrun") {
+    /* 点开始识别，等它跑完再截图；假数据下六十几本几秒就完 */
+    await clickText(".cbatch .cb-top .mini", "开始识别");
+    for (let i = 0; i < 120; i++) {
+      const st = await evalJs("(async () => JSON.stringify(await window.api.coverBatchState()))()");
+      let running = true;
+      try {
+        running = JSON.parse(st).running;
+      } catch {
+        running = false;
+      }
+      if (!running) break;
+      await wait(300);
+    }
+    await wait(600);
   } else if (act === "fadmin") {
     /* 从顶栏「更多」进字段管理 */
     await evalJs(`(() => { const b = [...document.querySelectorAll('.topbar .mini')].find(x => x.textContent.includes('更多')); if (b) b.click(); })()`);

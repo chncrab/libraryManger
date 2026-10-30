@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BooklibApi, BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch } from "../shared/types";
+import type {
+  BooklibApi,
+  BookPatch,
+  BookQuery,
+  CoverBatchState,
+  CoverCandidate,
+  FieldInput,
+  FieldPatch,
+  FieldType,
+  ReviewInput,
+  ReviewPatch
+} from "../shared/types";
 
 const api: BooklibApi = {
   info: () => ipcRenderer.invoke("app:info"),
@@ -50,6 +61,24 @@ const api: BooklibApi = {
 
   pickCover: (bookId: string) => ipcRenderer.invoke("covers:pick", bookId),
   resetCover: (bookId: string) => ipcRenderer.invoke("covers:reset", bookId),
+
+  searchCovers: (q: string) => ipcRenderer.invoke("covers:search", q),
+  coverDetail: (id: string) => ipcRenderer.invoke("covers:detail", id),
+  coverThumb: (url: string) => ipcRenderer.invoke("covers:thumb", url),
+  applyCover: (bookId: string, hit: CoverCandidate, backfill: boolean) =>
+    ipcRenderer.invoke("covers:apply", bookId, hit, !!backfill),
+  startCoverBatch: (backfill: boolean) => ipcRenderer.invoke("covers:batchStart", !!backfill),
+  stopCoverBatch: () => ipcRenderer.invoke("covers:batchStop"),
+  coverBatchState: () => ipcRenderer.invoke("covers:batchState"),
+  onCoverProgress: (cb: (s: CoverBatchState) => void) => {
+    const fn = (_e: unknown, s: CoverBatchState) => cb(s);
+    ipcRenderer.on("covers:batchProgress", fn);
+    return () => ipcRenderer.removeListener("covers:batchProgress", fn);
+  },
+  coverQueue: () => ipcRenderer.invoke("covers:queue"),
+  acceptQueuedCover: (bookId: string, backfill: boolean) =>
+    ipcRenderer.invoke("covers:queueAccept", bookId, !!backfill),
+  skipQueuedCover: (bookId: string) => ipcRenderer.invoke("covers:queueSkip", bookId),
 
   importReviewFiles: () => ipcRenderer.invoke("reviews:importFiles"),
   importReviewFolder: () => ipcRenderer.invoke("reviews:importFolder"),
