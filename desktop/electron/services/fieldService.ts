@@ -199,6 +199,12 @@ export function createField(db: DB, p: FieldInput): FieldResult {
   const hit = db.prepare("SELECT id FROM fields WHERE label = ? AND deleted_at IS NULL").get(label) as any;
   if (hit) return { ok: false, msg: "已经有同名字段了" };
 
+  /* 封面识别那几项要能认出是哪一列，key 由调用方给；没给就随机生成 */
+  const wantKey = String(p.key || "").trim();
+  if (wantKey && (db.prepare("SELECT id FROM fields WHERE key = ?").get(wantKey) as any)) {
+    return { ok: false, msg: "这个 key 已经有人用了" };
+  }
+
   const run = db.transaction(() => {
     const info = db
       .prepare(
@@ -206,7 +212,7 @@ export function createField(db: DB, p: FieldInput): FieldResult {
          VALUES (?, ?, ?, 0, '', '', ?, ?, ?, ?, ?)`
       )
       .run(
-        "f_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+        wantKey || "f_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
         label,
         p.type,
         p.width ?? 0,
