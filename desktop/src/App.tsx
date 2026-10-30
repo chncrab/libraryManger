@@ -8,6 +8,7 @@ import ReviewLib from "./components/ReviewLib";
 import CtxMenu, { type CtxItem } from "./components/CtxMenu";
 import CategoryAdmin from "./components/CategoryAdmin";
 import FieldAdmin from "./components/FieldAdmin";
+import CoverBatch from "./components/CoverBatch";
 import Confirm from "./components/Confirm";
 import SortBar, { DEFAULT_SORTS, normalizeSorts } from "./components/SortBar";
 import { ColumnPanel, AdvPanel } from "./components/ToolPanels";
@@ -90,6 +91,7 @@ export default function App() {
   const [more, setMore] = useState<{ x: number; y: number } | null>(null);
   const [cadmin, setCadmin] = useState(false);
   const [fadmin, setFadmin] = useState(false);
+  const [cbatch, setCbatch] = useState(false);
   const [colOpen, setColOpen] = useState(false);
   const [advOpen, setAdvOpen] = useState(false);
   const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
@@ -434,6 +436,7 @@ export default function App() {
     { key: "restore", label: "从备份恢复…" },
     { key: "copyLib", label: "把整个书库另存一份…" },
     { key: "s1", label: "", sep: true },
+    { key: "covers", label: "批量找封面…" },
     { key: "fields", label: "字段管理…" },
     { key: "cats", label: "分类管理…" },
     { key: "switch", label: "切换书库…" },
@@ -456,6 +459,7 @@ export default function App() {
       const r = await api.restoreDb();
       if (r && !r.ok) say(r.msg || "已取消");
     }
+    if (k === "covers") setCbatch(true);
     if (k === "fields") setFadmin(true);
     if (k === "cats") setCadmin(true);
     if (k === "theme") setTheme((t) => (t === "dark" ? "light" : "dark"));
@@ -763,6 +767,7 @@ export default function App() {
 
       {cadmin ? <CategoryAdmin onClose={() => setCadmin(false)} onChanged={bump} /> : null}
       {fadmin ? <FieldAdmin onClose={() => setFadmin(false)} onChanged={bump} /> : null}
+      {cbatch ? <CoverBatch onClose={() => setCbatch(false)} onChanged={bump} /> : null}
 
       {ask ? (
         <Confirm

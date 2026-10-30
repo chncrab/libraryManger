@@ -70,6 +70,8 @@ export interface FieldDef {
 export interface FieldInput {
   label: string;
   type: FieldType;
+  /** 自己定 key，只有程序内部建字段用。不传就随机生成 */
+  key?: string;
   options?: string[];
   inTable?: boolean;
   searchable?: boolean;
@@ -365,6 +367,68 @@ export interface PackResult {
   msg?: string;
 }
 
+/** 搜到的一张候选。pic 是缩略图，image 是大图，落盘用大图 */
+export interface CoverCandidate {
+  id: string;
+  title: string;
+  authors: string;
+  year: string;
+  publisher: string;
+  pic: string;
+  image: string;
+  /** 自动识别给的匹配分，手动搜出来的是 0 */
+  score: number;
+}
+
+/** 条目详情。info 里是页面上那几行原样字段，键为中文标签 */
+export interface CoverDetail {
+  id: string;
+  image: string;
+  info: Record<string, string>;
+}
+
+/** 一次搜索结果。cached 表示这次没走网络，用的是二十四小时内的旧结果 */
+export interface CoverSearchResult {
+  ok: boolean;
+  candidates: CoverCandidate[];
+  cached?: boolean;
+  msg?: string;
+}
+
+/** 落封面的结果。filled 是顺手补上的字段名，skipped 是有值没动的 */
+export interface CoverApplyResult {
+  ok: boolean;
+  cover?: string;
+  filled?: string[];
+  skipped?: string[];
+  msg?: string;
+}
+
+/** 批量识别的进度，前端按这个画条 */
+export interface CoverBatchState {
+  running: boolean;
+  total: number;
+  done: number;
+  applied: number;
+  queued: number;
+  failed: number;
+  /** 当前正在处理的书名，停下来时为空 */
+  current: string;
+  /** 停下来的原因，跑完或被限速打断 */
+  stopReason?: string;
+}
+
+/** 待确认队列的一条。candidate 是打分最高的那张，score 没到阈值 */
+export interface CoverQueueItem {
+  bookId: string;
+  title: string;
+  authors: string;
+  cover: string;
+  candidate: CoverCandidate | null;
+  score: number;
+  createdAt: string;
+}
+
 export interface BooklibApi {
   info(): Promise<AppInfo>;
 
@@ -455,4 +519,22 @@ export interface BooklibApi {
   removeFieldOption(id: number): Promise<FieldResult>;
   /** 图片类型字段选一张本地图，落进书库的 covers 目录，返回值就是文件名 */
   pickFieldImage(fieldKey: string, bookId: string): Promise<{ ok: boolean; name?: string; msg?: string } | null>;
+
+  /** 按书名、作者或 ISBN 搜封面候选。十三位数字当 ISBN 走 /isbn/ 那条 */
+  searchCovers(q: string): Promise<CoverSearchResult>;
+  /** 取条目详情，选中时才调 */
+  coverDetail(id: string): Promise<CoverDetail | null>;
+  /** 候选缩略图。图片站认 Referer，界面直连会被挡，由主进程取回转成 data URL */
+  coverThumb(url: string): Promise<string>;
+  /** 把选中的候选下下来落盘，backfill 为真时顺带补空着的书目字段 */
+  applyCover(bookId: string, hit: CoverCandidate, backfill: boolean): Promise<CoverApplyResult>;
+  /** 批量识别缺封面的书，backfill 为真时顺手补空着的书目字段，进度用 onCoverProgress 推 */
+  startCoverBatch(backfill: boolean): Promise<CoverBatchState>;
+  stopCoverBatch(): Promise<CoverBatchState>;
+  coverBatchState(): Promise<CoverBatchState>;
+  onCoverProgress(cb: (s: CoverBatchState) => void): () => void;
+  /** 待确认队列 */
+  coverQueue(): Promise<CoverQueueItem[]>;
+  acceptQueuedCover(bookId: string, backfill: boolean): Promise<CoverApplyResult>;
+  skipQueuedCover(bookId: string): Promise<{ ok: boolean }>;
 }

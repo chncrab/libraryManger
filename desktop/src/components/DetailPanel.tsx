@@ -3,6 +3,7 @@ import api, { coverUrl } from "../api";
 import type { BookPatch, BookRow, CatNode, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
 import { FieldEditor, patchOf, valuesOf } from "./FieldRenderer";
+import CoverSearch from "./CoverSearch";
 
 interface Props {
   id: string | null;
@@ -81,6 +82,7 @@ function Body({
   const b = data.book;
   const [cats, setCats] = useState<CatNode[]>([]);
   const [msg, setMsg] = useState("");
+  const [finding, setFinding] = useState(false);
   const msgTimer = useRef<number>(0);
 
   useEffect(() => {
@@ -205,6 +207,9 @@ function Body({
               <button className="mini xs" onClick={changeCover} title="选一张本地图片作为封面，原图会记下来">
                 换封面
               </button>
+              <button className="mini xs" onClick={() => setFinding(true)} title="按书名或 ISBN 去豆瓣找，选一张落盘">
+                搜封面
+              </button>
               <button className="mini xs" onClick={undoCover} title="退回换之前那张">
                 撤销
               </button>
@@ -229,6 +234,24 @@ function Body({
           </>
         ) : null}
       </div>
+
+      {finding ? (
+        <CoverSearch
+          bookId={b.id}
+          bookTitle={b.title}
+          bookAuthors={b.authors || []}
+          onClose={() => setFinding(false)}
+          onApplied={(r) => {
+            setFinding(false);
+            void api.getBook(b.id).then((d) => {
+              if (d) onPatched(d.book);
+            });
+            onSaved();
+            const extra = r.filled && r.filled.length ? "，补了" + r.filled.join("、") : "";
+            flash("封面已换上" + extra);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

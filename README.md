@@ -55,6 +55,7 @@ npm run dev -- --soft
 - 字段管理。十八个内建字段之外可自建，十种类型，能控列、控搜索、控筛选，改类型只走收紧方向，认不了的值列成清单不清空。
 - 书评库。单本、系列、草稿、未匹配四档，可改绑到别的书或系列，改绑即改名。
 - 封面。自定义图替换与撤销，原图留档。走 `cover://` 协议读本地文件，不进数据库。
+- 找封面。按书名、作者或 ISBN 去豆瓣搜，候选铺成网格选一张；缺封面的书可批量跑，打分不到阈值的进队列逐条过目，顺带补书目为可选项，只填空字段。
 - 备份。整库复制到别处，带封面与书评，不带历史备份目录。
 - 回收站。删除进回收站，可还原。
 
@@ -65,7 +66,7 @@ electron/
   main.ts              窗口、cover:// 协议、IPC 注册
   preload.ts           contextBridge 暴露 window.api
   db/                  连接、WAL、迁移、全文索引
-  services/            书目、编辑、字段、分类、系列、书评、封面、备份、设置、书库
+  services/            书目、编辑、字段、分类、系列、书评、封面、封面抓取、备份、设置、书库
 shared/types.ts        主进程与界面共用类型
 src/                   React 界面
 scripts/               导入、自测、冒烟、截图
@@ -87,12 +88,16 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-edit
 # 服务层，127 条
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-extra.mjs
 
+# 服务层，封面的 91 条，全程替身响应不走网络
+ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-cover.mjs
+
 # 交互冒烟，52 条，需先起应用并带 --remote-debugging-port=9334
 CDP_PORT=9334 node scripts/smoke.mjs
 
 # 只跑某一块，自己起实例、用副本、跑完收掉
 npm run smoke:review   # 书评，13 条
 npm run smoke:fields   # 字段，15 条
+npm run smoke:cover    # 封面，26 条，网络走假数据
 ```
 
 宿主若注入 `ELECTRON_RUN_AS_NODE` 或 `NODE_OPTIONS` 垫片，跑之前用 `env -u` 去掉，否则 Electron 会退化成纯 Node、批量删文件会挂住。
