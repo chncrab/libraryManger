@@ -35,6 +35,20 @@ import {
   removeFieldOption
 } from "./services/fieldService";
 import { setCoverFromFile, resetCover } from "./services/coverService";
+import {
+  search as coverSearch,
+  detailOf,
+  applyCandidate,
+  enqueue,
+  dequeue,
+  listQueue,
+  booksWithoutCover,
+  bestHit,
+  BlockedError,
+  MIN_SCORE,
+  GAP_MS
+} from "./services/coverFetch";
+import type { Http } from "./services/coverFetch";
 import { getSetting, setSetting } from "./services/settingsService";
 import { autoBackup, backupTo, listBackups } from "./services/backupService";
 import {
@@ -60,6 +74,7 @@ import {
 } from "./services/libraryService";
 import type { LibraryPaths } from "./services/libraryService";
 import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch } from "../shared/types";
+import type { CoverBatchState, CoverCandidate } from "../shared/types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "";
 
@@ -313,6 +328,228 @@ function createWindow(): void {
 
 const err = (e: unknown) => ({ ok: false, msg: e instanceof Error ? e.message : String(e) });
 
+/* ---- 封面识别 ---- */
+
+let batchState: CoverBatchState = {
+  running: false,
+  total: 0,
+  done: 0,
+  applied: 0,
+  queued: 0,
+  failed: 0,
+  current: "",
+  stopReason: ""
+};
+let batchStopWant = false;
+
+const emitBatch = () => {
+  try {
+    win?.webContents.send("covers:batchProgress", batchState);
+  } catch {
+    /* 窗口没了就没人听，不影响批量本身 */
+  }
+};
+
+/** 正式的网络实现。走 Chromium 的网络栈，系统代理与证书都跟着走 */
+function netHttp(): Http {
+  return {
+    async text(url, headers) {
+      const r = await net.fetch(url, { headers, redirect: "follow" });
+      return { status: r.status, url: r.url || url, text: await r.text() };
+    },
+    async bytes(url, headers) {
+      const r = await net.fetch(url, { headers, redirect: "follow" });
+      const buf = new Uint8Array(await r.arrayBuffer());
+      return { status: r.status, url: r.url || url, bytes: buf, contentType: r.headers.get("content-type") || "" };
+    }
+  };
+}
+
+/* 一张 2:3 的小封面，深边加浅底。后面补零撑到 1KB 以上好过体积校验，
+   解码器读到 IEND 就停，补的零不碍事。冒烟与截图用它，不联网也能走通落盘 */
+const FAKE_PNG = (() => {
+  const b64 =
+    "iVBORw0KGgoAAAANSUhEUgAAADwAAABaCAIAAABrM6JiAAAAdElEQVR42u3bOQ0AIAAAMcQQJnQgBxGIYEYqAphYeJImJ6AGLsSUvytAH0eX2h4PGhoaGhoaGhp6H937eDxoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaOibaDcz9NIEd3irul9Vf0MAAAAASUVORK5CYII=";
+  const head = Buffer.from(b64, "base64");
+  const pad = Buffer.alloc(1200 - head.length);
+  return new Uint8Array(Buffer.concat([head, pad]));
+})();
+
+/**
+ * 假数据。BOOKLIB_FAKE_COVER=1 时启用，只在测试里用。
+ * 搜索按查询词现造一条同名候选，另加一条带括号后缀的与一条作者条目，
+ * 后者是 type 为 a 的，用来确认过滤没漏；详情页与图片也现造。
+ * 每五次里有一次只返回弱匹配（书名只剩头两个字），好让待确认队列也能跑到。
+ */
+function fakeHttp(): Http {
+  let hits = 0;
+  const subjectHtml = (id: string, title: string) => `<!doctype html><html><head>
+<meta property="og:title" content="${title}" />
+<meta property="og:image" content="https://img3.doubanio.com/view/subject/l/public/${id}.jpg" />
+</head><body><h1 class="title"><span property="v:itemreviewed">${title}</span></h1>
+<div id="info">
+<span class="pl"> 作者</span>: 某作者<br/>
+<span class="pl">出版社:</span> 某出版社<br/>
+<span class="pl">出版年:</span> 2019-5-1<br/>
+<span class="pl">ISBN:</span> 9787000000001<br/>
+<span class="pl">页数:</span> 320<br/>
+<span class="pl">装帧:</span> 平装<br/>
+<span class="pl">定价:</span> 45.00元<br/>
+</div></body></html>`;
+
+  const suggest = (q: string) =>
+    JSON.stringify([
+      { title: q, url: "https://book.douban.com/subject/9001/", pic: "https://img3.doubanio.com/view/subject/s/public/9001.jpg", author_name: "某作者", year: "2019", type: "b", id: "9001" },
+      { title: q + "（新版）", url: "https://book.douban.com/subject/9002/", pic: "https://img3.doubanio.com/view/subject/s/public/9002.jpg", author_name: "另一个人", year: "2021", type: "b", id: "9002" },
+      { title: q, url: "https://book.douban.com/author/1/", pic: "https://img3.doubanio.com/view/celebrity/m/public/p1.jpg", type: "a", id: "1" }
+    ]);
+
+  /* 站内搜索页。查询词以「台版」开头时 suggest 给空数组，只有这条路有结果，
+     用来验 suggest 没收录时的回落，跟真站上搜繁体书的情形一个样 */
+  const siteHtml = (q: string) => {
+    const items = [
+      {
+        abstract: "某作者 / 某出版社 / 2018-10-18 / NTD450",
+        cover_url: "https://img3.doubanio.com/view/subject/m/public/9101.jpg",
+        id: 9101,
+        title: q,
+        url: "https://book.douban.com/subject/9101/"
+      },
+      {
+        abstract: "另一个人 / 另一家出版社 / 2016-1-14 / JPY 1296",
+        cover_url: "https://img3.doubanio.com/view/subject/m/public/9102.jpg",
+        id: 9102,
+        title: q + " : 副标题",
+        url: "https://book.douban.com/subject/9102/"
+      }
+    ];
+    return `<html><body><script>window.__DATA__ = ${JSON.stringify({ count: items.length, items })};</script></body></html>`;
+  };
+
+  return {
+    async text(url) {
+      if (url.includes("/j/subject_suggest")) {
+        const q = decodeURIComponent((url.split("q=")[1] || "").split("&")[0]);
+        hits++;
+        if (q.startsWith("台版")) return { status: 200, url, text: "[]" };
+        /* 每五次弱一次：书名只留头两个字，打 35 分，落在阈值下面进队列 */
+        if (hits % 5 === 0) {
+          return {
+            status: 200,
+            url,
+            text: JSON.stringify([
+              {
+                title: q.slice(0, 2),
+                url: "https://book.douban.com/subject/9003/",
+                pic: "https://img3.doubanio.com/view/subject/s/public/9003.jpg",
+                author_name: "不像的人",
+                year: "1999",
+                type: "b",
+                id: "9003"
+              }
+            ])
+          };
+        }
+        return { status: 200, url, text: suggest(q) };
+      }
+      if (url.includes("/subject_search")) {
+        const q = decodeURIComponent((url.split("search_text=")[1] || "").split("&")[0]);
+        return { status: 200, url, text: siteHtml(q) };
+      }
+      if (url.includes("/isbn/")) {
+        return { status: 200, url: "https://book.douban.com/subject/9001/", text: subjectHtml("9001", "按ISBN找到的书") };
+      }
+      const m = url.match(/subject\/(\d+)/);
+      return { status: 200, url, text: m ? subjectHtml(m[1], "假书名") : "" };
+    },
+    async bytes(url) {
+      if (url.includes("broken")) return { status: 200, url, bytes: new Uint8Array(10), contentType: "image/png" };
+      if (url.includes("notimage")) return { status: 200, url, bytes: FAKE_PNG, contentType: "text/html" };
+      return { status: 200, url, bytes: FAKE_PNG, contentType: "image/png" };
+    }
+  };
+}
+
+const httpImpl = (): Http => (process.env.BOOKLIB_FAKE_COVER === "1" ? fakeHttp() : netHttp());
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 批量跑一遍缺封面的书。串行，每本之间停一会儿，撞上限速就整批停，
+ * 剩下的一本不动、留在库里等下次。已经排进队列的也算处理过，不会重复弹。
+ */
+async function runCoverBatch(backfill: boolean): Promise<void> {
+  if (!lib) return;
+  const dir = lib.coverDir;
+  const conn = requireDb();
+  const books = booksWithoutCover(conn);
+
+  batchStopWant = false;
+  batchState = {
+    running: true,
+    total: books.length,
+    done: 0,
+    applied: 0,
+    queued: 0,
+    failed: 0,
+    current: "",
+    stopReason: ""
+  };
+  emitBatch();
+  if (!books.length) {
+    batchState = { ...batchState, running: false, stopReason: "没有缺封面的书" };
+    emitBatch();
+    return;
+  }
+
+  const http = httpImpl();
+  for (const b of books) {
+    if (batchStopWant) {
+      batchState = { ...batchState, stopReason: "手动停了" };
+      break;
+    }
+    batchState = { ...batchState, current: b.title };
+    emitBatch();
+
+    try {
+      const tick = await bestHit(conn, http, b);
+      if (tick.best && tick.score >= MIN_SCORE) {
+        const r = await applyCandidate(conn, http, b.id, tick.best, { coversDir: dir, backfill });
+        if (r.ok) {
+          batchState = { ...batchState, applied: batchState.applied + 1, done: batchState.done + 1 };
+        } else {
+          enqueue(conn, b.id, tick.best, tick.score);
+          batchState = { ...batchState, failed: batchState.failed + 1, queued: batchState.queued + 1, done: batchState.done + 1 };
+        }
+      } else {
+        enqueue(conn, b.id, tick.best, tick.score);
+        batchState = { ...batchState, queued: batchState.queued + 1, done: batchState.done + 1 };
+      }
+    } catch (e) {
+      if (e instanceof BlockedError) {
+        batchState = {
+          ...batchState,
+          stopReason: "豆瓣拦了一下（" + e.code + "），剩下的没动",
+          failed: batchState.failed + 1,
+          done: batchState.done + 1
+        };
+        break;
+      }
+      batchState = { ...batchState, failed: batchState.failed + 1, done: batchState.done + 1 };
+    }
+    emitBatch();
+    await sleep(GAP_MS);
+  }
+
+  batchState = {
+    ...batchState,
+    running: false,
+    current: "",
+    stopReason: batchState.stopReason || "跑完了"
+  };
+  emitBatch();
+}
+
 function registerIpc(): void {
   const D = requireDb;
 
@@ -564,6 +801,102 @@ function registerIpc(): void {
       return err(e);
     }
   });
+
+  /* ---- 封面识别。网络一律在主进程发，图片站认 Referer，界面直连会被 418 挡掉 ---- */
+
+  const http = httpImpl();
+
+  ipcMain.handle("covers:search", async (_e, q: string) => {
+    if (!lib) return { ok: false, candidates: [], msg: "还没有打开书库" };
+    try {
+      const r = await coverSearch(D(), http, String(q || ""));
+      return { ok: true, candidates: r.list, cached: r.cached };
+    } catch (e) {
+      if (e instanceof BlockedError) return { ok: false, candidates: [], msg: "豆瓣拦了一下（" + e.code + "），过一会儿再试" };
+      return { ok: false, candidates: [], msg: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("covers:detail", async (_e, id: string) => {
+    if (!lib) return null;
+    try {
+      return await detailOf(D(), http, String(id || ""));
+    } catch {
+      return null;
+    }
+  });
+
+  /* 候选缩略图转成 data URL 再给界面。豆瓣图片站要 Referer，img 标签直连一律 418 */
+  ipcMain.handle("covers:thumb", async (_e, url: string) => {
+    const u = String(url || "");
+    if (!/^https?:\/\//i.test(u)) return "";
+    try {
+      const r = await http.bytes(u, { "User-Agent": "Mozilla/5.0", Referer: "https://book.douban.com/" });
+      if (r.status !== 200 || !r.bytes.byteLength) return "";
+      const ct = String(r.contentType || "image/jpeg").split(";")[0].trim() || "image/jpeg";
+      return "data:" + ct + ";base64," + Buffer.from(r.bytes).toString("base64");
+    } catch {
+      return "";
+    }
+  });
+
+  ipcMain.handle("covers:apply", async (_e, bookId: string, hit: CoverCandidate, backfill: boolean) => {
+    if (!lib) return { ok: false, msg: "还没有打开书库" };
+    try {
+      return await applyCandidate(D(), http, bookId, hit, { coversDir: lib.coverDir, backfill: !!backfill });
+    } catch (e) {
+      return err(e);
+    }
+  });
+
+  ipcMain.handle("covers:queue", () => {
+    if (!lib) return [];
+    try {
+      return listQueue(D());
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle("covers:queueAccept", async (_e, bookId: string, backfill: boolean) => {
+    if (!lib) return { ok: false, msg: "还没有打开书库" };
+    const item = listQueue(D()).find((x) => x.bookId === bookId);
+    if (!item || !item.candidate) return { ok: false, msg: "队列里没有这一条" };
+    try {
+      const r = await applyCandidate(D(), http, bookId, item.candidate, {
+        coversDir: lib.coverDir,
+        backfill: !!backfill
+      });
+      if (r.ok) dequeue(D(), bookId);
+      return r;
+    } catch (e) {
+      return err(e);
+    }
+  });
+
+  ipcMain.handle("covers:queueSkip", (_e, bookId: string) => {
+    if (!lib) return { ok: false };
+    try {
+      dequeue(D(), bookId);
+      return { ok: true };
+    } catch (e) {
+      return err(e);
+    }
+  });
+
+  ipcMain.handle("covers:batchStart", async (_e, backfill: boolean) => {
+    if (!lib) return { ...batchState, stopReason: "还没有打开书库" };
+    if (batchState.running) return batchState;
+    void runCoverBatch(!!backfill);
+    return batchState;
+  });
+
+  ipcMain.handle("covers:batchStop", () => {
+    batchStopWant = true;
+    return batchState;
+  });
+
+  ipcMain.handle("covers:batchState", () => batchState);
 
   /* ---- 书评导入导出：目录固定是书库里的 reviews ---- */
   ipcMain.handle("reviews:importFiles", async () => {

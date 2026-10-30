@@ -279,11 +279,31 @@ CREATE VIRTUAL TABLE books_fts USING fts5 (
 );
 `;
 
+/* 封面识别的两张表。缓存按 kind 与关键词存整份响应，二十四小时内不再打豆瓣；
+   队列存打分没过阈值的那些，关了程序也还在，下次接着处理 */
+const V7 = `
+CREATE TABLE IF NOT EXISTS cover_cache (
+  kind       TEXT NOT NULL,
+  q          TEXT NOT NULL,
+  payload    TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (kind, q)
+);
+
+CREATE TABLE IF NOT EXISTS cover_queue (
+  book_id    TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+  candidate  TEXT NOT NULL DEFAULT '',
+  score      REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "init", sql: V1 },
   { version: 2, name: "category_parent", sql: V2 },
   { version: 3, name: "preset_top_categories", sql: V3 },
   { version: 4, name: "settings_and_cover_history", sql: V4 },
   { version: 5, name: "fields_and_values", sql: V5 },
-  { version: 6, name: "fts_extra_column", sql: V6 }
+  { version: 6, name: "fts_extra_column", sql: V6 },
+  { version: 7, name: "cover_cache_and_queue", sql: V7 }
 ];
