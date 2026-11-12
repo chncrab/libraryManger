@@ -54,6 +54,7 @@ npm run dev -- --soft
 - 分类管理。两级，拖拽调序，有子类或有书引用时不许删。
 - 字段管理。十八个内建字段之外可自建，十种类型，能控列、控搜索、控筛选，改类型只走收紧方向，认不了的值列成清单不清空。
 - 书评库。单本、系列、草稿、未匹配四档，可改绑到别的书或系列，改绑即改名。
+- 书评标签。每篇 Markdown 开头带一块标签区，记阅读时间、评分、书籍或系列、分类。时间、评分与分类由库单向写出，书籍与系列以文件为准，导入时按标签认书。现有书评可一次性补齐，也能撤销。
 - 封面。自定义图替换与撤销，原图留档。走 `cover://` 协议读本地文件，不进数据库。
 - 找封面。按书名、作者或 ISBN 去豆瓣搜，候选铺成网格选一张；缺封面的书可批量跑，打分不到阈值的进队列逐条过目，顺带补书目为可选项，只填空字段。
 - 备份。整库复制到别处，带封面与书评，不带历史备份目录。
@@ -85,7 +86,7 @@ npm run build:electron
 # 服务层，43 条
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-edit.mjs
 
-# 服务层，127 条
+# 服务层，144 条
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-extra.mjs
 
 # 服务层，封面的 91 条，全程替身响应不走网络
@@ -95,7 +96,7 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-cove
 CDP_PORT=9334 node scripts/smoke.mjs
 
 # 只跑某一块，自己起实例、用副本、跑完收掉
-npm run smoke:review   # 书评，13 条
+npm run smoke:review   # 书评，21 条
 npm run smoke:fields   # 字段，15 条
 npm run smoke:cover    # 封面，26 条，网络走假数据
 ```

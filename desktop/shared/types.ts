@@ -281,6 +281,10 @@ export interface ReviewIoSummary {
   removed?: number;
   /** 在外面改了文件名、库里跟着改映射的篇数，只有同步才有 */
   renamed?: number;
+  /** 补标签补了几篇，撤销标签撤了几篇 */
+  filled?: number;
+  /** 动手前那份备份在哪，补标签与撤销标签才有 */
+  backup?: string;
   dir?: string;
   msgs: string[];
 }
@@ -490,6 +494,10 @@ export interface BooklibApi {
   syncReviewDir(): Promise<ReviewIoSummary | null>;
   /** 把已经挂上书或系列的书评 md 改回规范名，renamed 是改了几份 */
   renameReviewFiles(): Promise<ReviewIoSummary | null>;
+  /** 现有书评一次性补齐开头那块标签，filled 是补了几篇 */
+  fillReviewFront(): Promise<ReviewIoSummary | null>;
+  /** 把开头那块整段删掉，之后不再自动写 */
+  stripReviewFront(): Promise<ReviewIoSummary | null>;
   openReviewDir(): Promise<boolean>;
 
   /** 备份与恢复 */

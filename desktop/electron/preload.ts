@@ -86,6 +86,8 @@ const api: BooklibApi = {
   reviewDirInfo: () => ipcRenderer.invoke("reviews:dirInfo"),
   syncReviewDir: () => ipcRenderer.invoke("reviews:sync"),
   renameReviewFiles: () => ipcRenderer.invoke("reviews:rename"),
+  fillReviewFront: () => ipcRenderer.invoke("reviews:fillFront"),
+  stripReviewFront: () => ipcRenderer.invoke("reviews:stripFront"),
   openReviewDir: () => ipcRenderer.invoke("reviews:openDir"),
 
   backupDb: () => ipcRenderer.invoke("backup:now"),
