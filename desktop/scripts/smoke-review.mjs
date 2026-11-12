@@ -168,12 +168,13 @@ if (frontInfo) {
   frontText = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
 }
 check(
-  "md 开头写着阅读时间、评分、书籍",
+  "md 开头写着阅读时间、评分、书籍、分类",
   !!frontInfo &&
     frontText.startsWith("---\n") &&
-    /^书籍: 《.+》$/m.test(frontText) &&
+    /^书籍: .+-《.+》$/m.test(frontText) &&
     /^阅读时间:/m.test(frontText) &&
-    /^评分:/m.test(frontText),
+    /^评分:/m.test(frontText) &&
+    /^分类:/m.test(frontText),
   frontInfo ? frontInfo.name : "没有带正文的书评"
 );
 check("首部后面才是正文，空一行", frontText.includes("\n---\n\n") && !frontText.slice(0, frontText.indexOf("\n---\n\n")).includes("#"), "长度 " + frontText.length);
@@ -238,6 +239,74 @@ const seenEmpty = await js(
   `[...document.querySelectorAll('.rvs-list .rvi')].some((e) => (e.textContent || '').includes('空占位'))`
 );
 check("空的 md 也进库并显示", seenEmpty === true, emptyName);
+
+/* ---- 补齐与撤销标签 ---- */
+const openMore = () =>
+  js(`(() => {
+    const b = [...document.querySelectorAll('.rvs-h .mini')].find((e) => e.textContent.includes('更多'));
+    if (b) { b.click(); return true; }
+    return false;
+  })()`);
+const pickMenu = (word) =>
+  js(`(() => {
+    const it = [...document.querySelectorAll('.ctx-i')].find((e) => (e.textContent || '').includes(${JSON.stringify(word)}));
+    if (!it) return false;
+    it.click();
+    return true;
+  })()`);
+const frontCount = () =>
+  fs
+    .readdirSync(reviewDir)
+    .filter((f) => /\.md$/i.test(f))
+    .filter((f) => fs.readFileSync(path.join(reviewDir, f), "utf8").startsWith("---\n")).length;
+
+await openMore();
+await wait(400);
+const menuTxt = await js("[...document.querySelectorAll('.ctx-i')].map((e) => e.textContent.trim()).join('|')");
+check("菜单里有补齐与撤销标签", menuTxt.includes("补齐书评标签") && menuTxt.includes("撤销标签"), menuTxt.slice(0, 60));
+
+await pickMenu("补齐书评标签");
+await wait(2400);
+let fillToast = await js("(document.querySelector('.toast')||{}).textContent||''");
+if (!fillToast.includes("补标签")) {
+  await wait(1200);
+  fillToast = await js("(document.querySelector('.toast')||{}).textContent||''");
+}
+check("补齐给结果", fillToast.includes("补标签"), fillToast.slice(0, 40));
+const frontAfterFill = frontCount();
+check("补齐后文件开头有标签", frontAfterFill > 100, frontAfterFill + " 篇带标签");
+const oneFront = (() => {
+  const f = fs.readdirSync(reviewDir).filter((x) => /\.md$/i.test(x)).find((x) => fs.readFileSync(path.join(reviewDir, x), "utf8").startsWith("---\n"));
+  if (!f) return "";
+  const t0 = fs.readFileSync(path.join(reviewDir, f), "utf8");
+  return t0.slice(0, t0.indexOf("\n---\n") + 1);
+})();
+check(
+  "首部五个键齐",
+  ["阅读时间", "评分", "书籍", "系列", "分类"].filter((k) => new RegExp("^" + k + ":", "m").test(oneFront)).length >= 4,
+  oneFront.replace(/\n/g, " / ").slice(0, 80)
+);
+
+/* 撤销要二次确认，确认之后开头那块没了，再补齐又回来 */
+await openMore();
+await wait(400);
+await pickMenu("撤销标签");
+await wait(500);
+const stripCfm = await js("!!document.querySelector('.cfm')");
+check("撤销要二次确认", stripCfm === true);
+await js(`document.querySelector('.cfm-b .mini.danger').click()`);
+await wait(1600);
+const stripToast = await js("(document.querySelector('.toast')||{}).textContent||''");
+check("撤销给结果", stripToast.includes("撤"), stripToast.slice(0, 40));
+const frontAfterStrip = frontCount();
+check("撤销后文件开头没标签", frontAfterStrip === 0, frontAfterStrip + " 篇带标签");
+
+await openMore();
+await wait(400);
+await pickMenu("补齐书评标签");
+await wait(2600);
+const frontBack = frontCount();
+check("再补又能加回来", frontBack > 100, frontBack + " 篇带标签");
 
 console.log(`\n书评冒烟 ${ok}/${ok + bad} 通过`);
 ws.close();

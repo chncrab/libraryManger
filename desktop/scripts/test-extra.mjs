@@ -232,13 +232,14 @@ t("改名不是另写一份，目录里只留一份", fs.readdirSync(dir).filter
 /* 文件开头现在带首部，比正文前先把它拆掉 */
 t("改名后正文没动", canon ? io.splitFront(fs.readFileSync(path.join(dir, canon), "utf8")).body === rawBody : false);
 
-/* 首部：阅读时间、评分、书籍，正文隔一个空行跟在后面 */
+/* 首部：阅读时间、评分、作者加书名、分类，正文隔一个空行跟在后面 */
 const frontRaw = canon && fs.existsSync(path.join(dir, canon)) ? fs.readFileSync(path.join(dir, canon), "utf8") : "";
 t(
   "落盘带首部，正文在后面",
   frontRaw.startsWith("---\n") &&
-    /^阅读时间: \d{4}-\d{2}-\d{2}$/m.test(frontRaw) &&
-    /^书籍: 《.+》$/m.test(frontRaw) &&
+    /^阅读时间:(\s\d{4}-\d{2}-\d{2})?$/m.test(frontRaw) &&
+    /^书籍: .+-《.+》$/m.test(frontRaw) &&
+    /^分类:/m.test(frontRaw) &&
     frontRaw.includes("\n---\n\n"),
   frontRaw.slice(0, 46).replace(/\n/g, "\\n")
 );
@@ -253,7 +254,8 @@ const dbBody = db.prepare("SELECT md FROM reviews WHERE id = ?").get(boundRow.id
 t("首部不进库，库里只存正文", !dbBody.startsWith("---") && !/^书籍: /m.test(dbBody), dbBody.slice(0, 18));
 t(
   "首部能被拆回来",
-  io.splitFront(frontRaw).body === rawBody && io.splitFront(frontRaw).fields["书籍"] === "《" + free2.title + "》",
+  io.splitFront(frontRaw).body === rawBody &&
+    String(io.splitFront(frontRaw).fields["书籍"] || "").endsWith("-《" + free2.title + "》"),
   JSON.stringify(io.splitFront(frontRaw).fields)
 );
 
@@ -722,6 +724,187 @@ for (const f of [dayField, txtField, selField, mulField, swField]) {
   db.prepare("DELETE FROM field_options WHERE field_id = ?").run(f.id);
   db.prepare("DELETE FROM fields WHERE id = ?").run(f.id);
 }
+
+console.log("\n[13] 书评首部标签");
+const readOf = (f) => fs.readFileSync(path.join(dir, f), "utf8");
+const mdFiles = () => fs.readdirSync(dir).filter((f) => /\.md$/i.test(f));
+
+/* 挑一本标题唯一、还没有书评的书，标签相关的事都拿它做样本 */
+const usedPick = new Set();
+const pickBook = () => {
+  const rows = db
+    .prepare(
+      `SELECT b.id, b.title,
+              (SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                WHERE ba.book_id = b.id ORDER BY ba.ord LIMIT 1) AS author
+         FROM books b
+        WHERE b.deleted_at IS NULL
+          AND (SELECT COUNT(*) FROM books b2 WHERE b2.title = b.title AND b2.deleted_at IS NULL) = 1
+          AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)
+        ORDER BY LENGTH(b.title) DESC, b.title`
+    )
+    .all();
+  const hit = rows.find((r) => !usedPick.has(r.id));
+  if (hit) usedPick.add(hit.id);
+  return hit;
+};
+
+const lbA = pickBook();
+const lbB = pickBook();
+/* 标签与文件名各指一本，按标签挂，并且要说一句 */
+const clashName = (lbB.author || "佚名") + "-《" + lbB.title + "》.md";
+fs.writeFileSync(
+  path.join(dir, clashName),
+  "---\n书籍: " + (lbA.author || "佚名") + "-《" + lbA.title + "》\n---\n\n按标签挂上的",
+  "utf8"
+);
+const clashSync = io.syncDir(db, dir);
+const lbARow = db.prepare("SELECT id, md FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(lbA.id);
+const lbBRow = db.prepare("SELECT id FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(lbB.id);
+t("标签指哪本挂哪本，文件名说的话不算", !!lbARow && lbARow.md === "按标签挂上的" && !lbBRow, lbA.title);
+t("冲突时说了一句", (clashSync.msgs || []).some((m) => m.includes("不是同一本")), (clashSync.msgs || []).join("；"));
+
+/* 标签里的书库里没有，退回文件名认，认上之后标签被改成正确的那本 */
+const lbC = pickBook();
+const fallName = (lbC.author || "佚名") + "-《" + lbC.title + "》.md";
+fs.writeFileSync(path.join(dir, fallName), "---\n书籍: 某人-《这本书根本不存在》\n---\n\n退回文件名", "utf8");
+io.syncDir(db, dir);
+const lbCRow = db.prepare("SELECT id FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(lbC.id);
+const lbCText = lbCRow ? readOf(rv.reviewFileName(db, { kind: "book", id: lbCRow.id })) : "";
+t(
+  "标签认不出就退回文件名",
+  !!lbCRow && lbCText.includes("《" + lbC.title + "》") && !lbCText.includes("这本书根本不存在"),
+  lbCText.split("\n").find((l) => l.startsWith("书籍:")) || "没挂上"
+);
+
+/* 完全没有标签的 md 导进来，挂上之后开头长出五行，正文一字不动 */
+const lbD = pickBook();
+const bareBody = "# 一段正文\n这篇放进来的时候没有标签。";
+fs.writeFileSync(path.join(dir, (lbD.author || "佚名") + "-《" + lbD.title + "》.md"), bareBody, "utf8");
+io.syncDir(db, dir);
+const lbDRow = db.prepare("SELECT id FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(lbD.id);
+const lbDText = lbDRow ? readOf(rv.reviewFileName(db, { kind: "book", id: lbDRow.id })) : "";
+const lbDParts = io.splitFront(lbDText);
+t(
+  "没有标签的导入后长出五行",
+  lbDParts.hasFront &&
+    ["阅读时间", "评分", "书籍", "分类"].every((k) => (lbDText.match(new RegExp("^" + k + ":", "m")) || []).length === 1),
+  lbDText.split("\n").slice(1, 6).join(" / ")
+);
+t("补标签没动正文", lbDParts.body === bareBody);
+
+/* 分类那行只写名字，按 地区、题材、标签 的顺序排，顿号连接 */
+const catBook = db
+  .prepare(
+    `SELECT b.id, b.title FROM books b JOIN book_categories bc ON bc.book_id = b.id
+      WHERE b.deleted_at IS NULL GROUP BY b.id HAVING COUNT(*) >= 2
+      ORDER BY COUNT(*) DESC LIMIT 1`
+  )
+  .get();
+const catRow = catBook
+  ? db.prepare("SELECT r.id FROM reviews r WHERE r.book_id = ? AND r.deleted_at IS NULL").get(catBook.id)
+  : null;
+if (catRow) {
+  const catText = readOf(rv.reviewFileName(db, { kind: "book", id: catRow.id }));
+  const catLine = (catText.match(/^分类:(.*)$/m) || [])[1] || "";
+  const catNames = new Set(db.prepare("SELECT name FROM categories").all().map((r) => r.name));
+  const parts = catLine.trim() ? catLine.trim().split("、") : [];
+  t("分类行只写名字，顿号隔开", parts.length >= 2 && parts.every((p) => catNames.has(p.trim())), catLine.trim());
+  const ordOf = (name) => {
+    const r = db
+      .prepare(
+        `SELECT c.ord AS cOrd, p.ord AS pOrd FROM categories c LEFT JOIN categories p ON p.id = c.parent_id WHERE c.name = ?`
+      )
+      .get(name);
+    return r ? Number(r.pOrd ?? r.cOrd) : 0;
+  };
+  let inorder = true;
+  let last = -Infinity;
+  for (const p of parts) {
+    const o = ordOf(p.trim());
+    if (o < last) inorder = false;
+    last = o;
+  }
+  t("分类按地区、题材、标签的顺序排", inorder, parts.join(" | "));
+}
+
+/* 系列总评：阅读时间取该系列最晚那天，评分取最近读过且有分那册 */
+io.exportAll(db, dir);
+const serPick = db
+  .prepare(
+    `SELECT r.id AS rid, s.id AS sid FROM reviews r JOIN series s ON s.id = r.series_id
+      WHERE r.deleted_at IS NULL AND r.book_id IS NULL
+        AND EXISTS (SELECT 1 FROM books b WHERE b.series_id = s.id AND b.deleted_at IS NULL
+                     AND b.rating > 0 AND b.read_date <> '')
+      LIMIT 1`
+  )
+  .get();
+const wantDay = serPick
+  ? (db.prepare("SELECT MAX(read_date) AS d FROM books WHERE series_id = ? AND deleted_at IS NULL").get(serPick.sid) || {}).d || ""
+  : "";
+const wantRate = serPick
+  ? db
+      .prepare(
+        `SELECT rating FROM books WHERE series_id = ? AND deleted_at IS NULL AND rating > 0
+          AND read_date IS NOT NULL AND read_date <> ''
+          ORDER BY read_date DESC, series_index IS NULL, series_index, title LIMIT 1`
+      )
+      .get(serPick.sid)
+  : null;
+const serPickFile = serPick ? rv.reviewFileName(db, { kind: "series", id: serPick.rid }) : "";
+const serText = serPickFile && fs.existsSync(path.join(dir, serPickFile)) ? readOf(serPickFile) : "";
+const serDay = (serText.match(/^阅读时间:(.*)$/m) || [])[1] || "";
+const serRate = (serText.match(/^评分:(.*)$/m) || [])[1] || "";
+t(
+  "系列篇的阅读时间是最晚那天",
+  !!serText && serDay.trim() === String(wantDay).slice(0, 10),
+  serDay.trim() + " / 库里 " + String(wantDay).slice(0, 10)
+);
+t(
+  "系列篇的评分不再空着",
+  !!serText && Number(serRate.trim()) > 0 && Number(serRate.trim()) === Math.round(Number(wantRate?.rating || 0) * 10) / 10,
+  serRate.trim() + " / 最新有分那册 " + (wantRate?.rating ?? "无")
+);
+
+/* 把开头那块退回到只有老四行的样子，模拟现有那批文件，好让补齐有活干 */
+for (const f of mdFiles().filter((f) => io.splitFront(readOf(f)).hasFront).slice(0, 20)) {
+  const t0 = readOf(f);
+  const p = io.splitFront(t0);
+  const keep = ["阅读时间", "评分", "书籍", "系列"]
+    .map((k) => (t0.match(new RegExp("^" + k + ":.*$", "m")) || [])[0])
+    .filter(Boolean);
+  fs.writeFileSync(path.join(dir, f), "---\n" + keep.join("\n") + "\n---\n\n" + p.body, "utf8");
+}
+
+/* 现有书评一次补齐：正文一个字不动，再点一次全跳过 */
+const bodyBefore = new Map(mdFiles().map((f) => [f, io.splitFront(readOf(f)).body]));
+const fill1 = io.fillFront(db, dir, path.join(tmp, "bak-fill1"));
+t("补齐写了一批", (fill1.filled || 0) > 0, "补 " + (fill1.filled || 0) + "，跳过 " + fill1.skipped);
+const bodySame = mdFiles().every((f) => io.splitFront(readOf(f)).body === bodyBefore.get(f));
+t("补齐之后正文逐篇一致", bodySame, mdFiles().length + " 篇");
+/* 未匹配那些没有关联对象，本来就不该有首部，只数挂上书或系列的 */
+const wired = db
+  .prepare("SELECT COUNT(*) AS n FROM reviews WHERE deleted_at IS NULL AND (book_id IS NOT NULL OR series_id IS NOT NULL)")
+  .get().n;
+const frontAfter = mdFiles().filter((f) => io.splitFront(readOf(f)).hasFront).length;
+t("补齐之后挂上书的篇篇有标签块", frontAfter === wired, frontAfter + " / 库里 " + wired);
+t("动手前留了备份", !!fill1.backup && fs.existsSync(fill1.backup), path.basename(fill1.backup || ""));
+const fill2 = io.fillFront(db, dir, path.join(tmp, "bak-fill2"));
+t("再点一次一篇都不写", (fill2.filled || 0) === 0 && fill2.skipped > 0, "跳过 " + fill2.skipped);
+
+/* 撤销：开头那块整段删掉，之后导出也不会补回来 */
+const strip = io.stripFront(db, dir, path.join(tmp, "bak-strip"));
+t("撤销删掉了开头那块", (strip.filled || 0) > 0, "撤 " + (strip.filled || 0) + " 篇");
+t("撤销后一篇都没有标签块", mdFiles().every((f) => !io.splitFront(readOf(f)).hasFront), mdFiles().length + " 篇");
+t("撤销后正文还在", mdFiles().every((f) => io.splitFront(readOf(f)).body === bodyBefore.get(f)));
+io.exportAll(db, dir);
+t("撤销之后导出不会把块补回来", mdFiles().every((f) => !io.splitFront(readOf(f)).hasFront));
+const fill3 = io.fillFront(db, dir, path.join(tmp, "bak-fill3"));
+t(
+  "再点补齐能加回来",
+  (fill3.filled || 0) > 0 && mdFiles().filter((f) => io.splitFront(readOf(f)).hasFront).length === wired,
+  "补 " + (fill3.filled || 0)
+);
 
 /* 收尾：清掉临时目录与这轮的改动 */
 fs.rmSync(tmp, { recursive: true, force: true });

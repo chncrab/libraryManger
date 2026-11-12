@@ -59,7 +59,9 @@ import {
   writeOne,
   forgetFile,
   dropMapping,
-  normalizeNames
+  normalizeNames,
+  fillFront,
+  stripFront
 } from "./services/reviewIo";
 import {
   pathsOf,
@@ -953,6 +955,26 @@ function registerIpc(): void {
       return normalizeNames(db, lib.reviewDir);
     } catch (e) {
       console.error("[review] 重命名失败", e);
+      return null;
+    }
+  });
+  /* 现有书评一次性补齐开头那块标签。只动开头，正文不动，动手前整目录备份一份 */
+  ipcMain.handle("reviews:fillFront", () => {
+    if (!db || !lib) return null;
+    try {
+      return fillFront(db, lib.reviewDir, lib.backupDir);
+    } catch (e) {
+      console.error("[review] 补标签失败", e);
+      return null;
+    }
+  });
+  /* 撤销标签：删掉开头那块，并把开关关掉，之后不再自动写 */
+  ipcMain.handle("reviews:stripFront", () => {
+    if (!db || !lib) return null;
+    try {
+      return stripFront(db, lib.reviewDir, lib.backupDir);
+    } catch (e) {
+      console.error("[review] 撤销标签失败", e);
       return null;
     }
   });

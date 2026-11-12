@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DB } from "../db";
 import type { ReviewIoSummary, ReviewRow } from "../../shared/types";
 import { listReviews, reviewFileName, sanitizeFile } from "./reviewService";
-import { seriesTitle } from "./seriesService";
+import { seriesAuthor, seriesLabel, seriesTitle } from "./seriesService";
 import { getSetting, setSetting } from "./settingsService";
 
 /**
@@ -101,8 +101,8 @@ export function importReviewTexts(
   const t = new Date().toISOString();
   /* 事务里不碰文件，先把要落盘的攒下来，提交之后再做。
      事务回滚了文件却已改名，库和目录就对不上了 */
-  const bound: { id: number; from: string }[] = [];
-  const dup: { id: number; from: string }[] = [];
+  const bound: { id: number; from: string; kind: string }[] = [];
+  const dup: { id: number; from: string; kind: string }[] = [];
 
   const run = db.transaction(() => {
     for (const f of files) {
@@ -110,34 +110,67 @@ export function importReviewTexts(
       const { fields, body } = splitFront(raw);
       const text = body;
       const fileName = sanitizeFile(path.basename(f.name));
-      let { title, author } = parseName(fileName, text);
+      const named = parseName(fileName, text);
       const grade = gradeOf(fileName, text);
-      /* 文件名认不出是哪本书时再看首部的「书籍」。名字对不上、字段说了算，仍是一本对一本 */
-      let bookId = findBook(db, title, author);
-      if (!bookId) {
-        const named = bareName(fields["书籍"] || "");
-        if (named) {
-          const byField = findBook(db, named, author);
-          if (byField) {
-            bookId = byField;
-            title = named;
+
+      /* 标签优先。开头写了「书籍」或「系列」就先按它认，认不上再退回文件名，
+         两样都认不出才进未匹配池。标签是手写的，错一个字不该把整篇丢掉 */
+      const labRaw = String(fields["书籍"] || "").trim();
+      const serRaw = labRaw ? "" : String(fields["系列"] || "").trim();
+      const lab = labRaw ? splitLabel(labRaw) : serRaw ? splitLabel(serRaw) : null;
+      let title = named.title;
+      let author = named.author;
+      let bookId: string | null = null;
+      let seriesId: number | null = null;
+      let viaLabel = false;
+
+      if (lab) {
+        const au = lab.author || named.author;
+        if (labRaw) {
+          const hit = findBook(db, lab.title, au);
+          if (hit) {
+            bookId = hit;
+            title = lab.title;
+            author = au;
+            viaLabel = true;
           }
+        } else {
+          const sid = findSeries(db, lab.title, au);
+          if (sid) {
+            seriesId = sid;
+            title = lab.title;
+            viaLabel = true;
+          }
+        }
+      }
+      if (!bookId && !seriesId) {
+        bookId = findBook(db, named.title, named.author);
+        title = named.title;
+        author = named.author;
+      }
+      /* 标签与文件名各指一本时以标签为准，说明一句，免得以为软件没听 */
+      if (viaLabel && lab) {
+        const byName = findBook(db, named.title, named.author);
+        if (byName && byName !== bookId) {
+          out.msgs.push("《" + named.title + "》与开头写的《" + lab.title + "》不是同一本，按开头那份挂上");
         }
       }
       /* 阅读时间以首部为准，没写的用导入这一刻 */
       const day = String(fields["阅读时间"] || "").slice(0, 10);
       const at = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day + "T00:00:00.000Z" : t;
 
-      if (bookId) {
-        const cur = db.prepare("SELECT id, md FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(bookId) as any;
+      if (bookId || seriesId) {
+        const cur = bookId
+          ? (db.prepare("SELECT id, md FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(bookId) as any)
+          : (db.prepare("SELECT id, md FROM reviews WHERE series_id = ? AND book_id IS NULL AND deleted_at IS NULL").get(seriesId) as any);
         if (!cur) {
           const info = db
             .prepare(
-              `INSERT INTO reviews (book_id, name, md, grade, happened_at, file_name, origin, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?)`
+              `INSERT INTO reviews (book_id, series_id, name, md, grade, happened_at, file_name, origin, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, '', 'import', ?, ?)`
             )
-            .run(bookId, title, text, grade, at, "", t, t);
-          bound.push({ id: Number(info.lastInsertRowid), from: fileName });
+            .run(bookId || null, seriesId || null, title, text, grade, at, t, t);
+          bound.push({ id: Number(info.lastInsertRowid), from: fileName, kind: bookId ? "book" : "series" });
           out.added++;
         } else if (cur.md === text) {
           out.skipped++;
@@ -146,7 +179,7 @@ export function importReviewTexts(
           out.skipped++;
         } else {
           db.prepare("UPDATE reviews SET md = ?, updated_at = ? WHERE id = ?").run(text, t, cur.id);
-          dup.push({ id: cur.id, from: fileName });
+          dup.push({ id: cur.id, from: fileName, kind: bookId ? "book" : "series" });
           out.updated++;
         }
       } else {
@@ -178,13 +211,13 @@ export function importReviewTexts(
      目录里就成了两份同内容的东西，用户看到的是「绑上了但名字没变」 */
   if (opts?.dir) {
     const dir = opts.dir;
-    for (const it of bound) writeOne(db, dir, "book", it.id, it.from);
+    for (const it of bound) writeOne(db, dir, it.kind, it.id, it.from);
     /* 这本书本来就有书评，外面这份是同一篇的另一份。内容已经并进库，
        按规范名写一次，再把外面那份收走，免得两份对着改 */
     for (const it of dup) {
-      writeOne(db, dir, "book", it.id);
+      writeOne(db, dir, it.kind, it.id);
       if (!opts.move) continue;
-      const now = loadMap(db)[keyOf("book", it.id)];
+      const now = loadMap(db)[keyOf(it.kind, it.id)];
       if (now && it.from !== now) removeFile(dir, it.from);
     }
   }
@@ -253,18 +286,24 @@ function mdOf(db: DB, kind: string, id: number): string {
   return r ? r.md || "" : "";
 }
 
-/* 首部只认这四个键。别的键原样留在文件里不动，也不往库里塞 */
-const FRONT_KEYS = ["阅读时间", "评分", "书籍", "系列"];
+/* 首部认这五个键。别的键原样留在文件里不动，也不往库里塞 */
+const FRONT_KEYS = ["阅读时间", "评分", "书籍", "系列", "分类"];
+
+/* 标签总开关。设成 "0" 之后一律不写首部，撤销标签靠它，不能只删文件那一块 */
+const FRONT_SWITCH = "review_front";
 
 /**
  * 拆文件开头的首部。正文里本来就可能有 `---` 分隔线，
  * 所以只有认得出已知键时才算首部，认不出就整篇当正文。
+ *
+ * hasFront 表示「开头确实有一块标签」，补写时按它判断该不该补，
+ * 不看正文有没有变。块里缺了某个键也算有块，缺的那行由补写补上。
  */
-export function splitFront(raw: string): { fields: Record<string, string>; body: string } {
+export function splitFront(raw: string): { fields: Record<string, string>; body: string; hasFront: boolean } {
   const s = String(raw || "").replace(/^\uFEFF/, "");
-  if (!s.startsWith("---")) return { fields: {}, body: s };
+  if (!s.startsWith("---")) return { fields: {}, body: s, hasFront: false };
   const m = s.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
-  if (!m) return { fields: {}, body: s };
+  if (!m) return { fields: {}, body: s, hasFront: false };
   const fields: Record<string, string> = {};
   for (const line of m[1].split(/\r?\n/)) {
     const i = line.indexOf(":");
@@ -273,42 +312,202 @@ export function splitFront(raw: string): { fields: Record<string, string>; body:
     if (!FRONT_KEYS.includes(k)) continue;
     fields[k] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
   }
-  if (!Object.keys(fields).length) return { fields: {}, body: s };
+  if (!Object.keys(fields).length) return { fields: {}, body: s, hasFront: false };
   /* 写的时候首部与正文之间留一个空行，读回来把这个空行去掉，两边才对得上 */
-  return { fields, body: s.slice(m[0].length).replace(/^\r?\n/, "") };
+  return { fields, body: s.slice(m[0].length).replace(/^\r?\n/, ""), hasFront: true };
 }
 
-function bareName(v: string): string {
-  return String(v || "").replace(/^[《〈【\s]+|[》〉】\s]+$/g, "").trim();
+/**
+ * 首部里「书籍」「系列」两行的写法是「作者-《书名》」，作者可以省。
+ * 拆开之后交给 findBook 走现有那套同名收窄，与文件名那条路同一个口径。
+ */
+export function splitLabel(v: string): { author: string; title: string } {
+  const s = String(v || "").trim();
+  const m = s.match(/《([^》]+)》/);
+  if (m) {
+    const head = s.slice(0, m.index).replace(/[-_\s]+$/, "").trim();
+    return { author: head, title: m[1].trim() };
+  }
+  return { author: "", title: s.replace(/^[《〈【\s]+|[》〉】\s]+$/g, "").trim() };
+}
+
+/** 系列名归一：去书名号、去尾部「系列/シリーズ」、去空白，好让标签与库里的名字对得上 */
+function normSeries(s: string): string {
+  return seriesLabel(String(s || "").replace(/^[《〈【\s]+|[》〉】\s]+$/g, ""))
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+/** 标签里的系列名去库里找。同名跨媒介时用主作者收窄，收不窄取库里排前面的那个 */
+function findSeries(db: DB, name: string, author: string): number | null {
+  const want = normSeries(name);
+  if (!want) return null;
+  const rows = db.prepare("SELECT id, name FROM series ORDER BY id").all() as any[];
+  const hits = rows.filter((r) => normSeries(String(r.name)) === want);
+  if (!hits.length) return null;
+  if (hits.length === 1) return Number(hits[0].id);
+  if (author) {
+    const byAuthor = hits.filter((r) => seriesAuthor(db, Number(r.id)) === author);
+    if (byAuthor.length === 1) return Number(byAuthor[0].id);
+  }
+  return Number(hits[0].id);
+}
+
+/**
+ * 一本书的分类名。只写叶子名字，不带「地区/」这种前缀，按根节点的先后排，
+ * 同根下面按自己的序号排。根序号与子序号不在一个域里，分开比才排得对。
+ */
+function catsOf(db: DB, bookId: string): string[] {
+  if (!bookId) return [];
+  const rows = db
+    .prepare(
+      `SELECT c.name AS name, c.ord AS cOrd, p.ord AS pOrd
+         FROM book_categories bc
+         JOIN categories c ON c.id = bc.category_id
+         LEFT JOIN categories p ON p.id = c.parent_id
+        WHERE bc.book_id = ?`
+    )
+    .all(bookId) as any[];
+  const seen = new Set<string>();
+  const out: { name: string; root: number; leaf: number }[] = [];
+  for (const r of rows) {
+    const name = String(r.name || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, root: Number(r.pOrd ?? r.cOrd) || 0, leaf: r.pOrd == null ? 0 : Number(r.cOrd) || 0 });
+  }
+  out.sort((a, b) => a.root - b.root || a.leaf - b.leaf || a.name.localeCompare(b.name, "zh"));
+  return out.map((o) => o.name);
+}
+
+/** 系列里册序最靠前的那本，分类与作者都从它取 */
+function firstBookOfSeries(db: DB, seriesId: number): any {
+  return db
+    .prepare(
+      `SELECT id, title FROM books
+        WHERE series_id = ? AND deleted_at IS NULL
+        ORDER BY series_index IS NULL, series_index, title LIMIT 1`
+    )
+    .get(seriesId);
+}
+
+type FrontInfo = { day: string; rate: number | null; own: string; cats: string[] };
+
+/**
+ * 首部里由库派生出来的那几项。
+ * 单本取这本书的阅读日期、评分、分类；系列取最晚读的那天、最近读过且有分那册的评分、首册的分类。
+ */
+function frontOf(db: DB, kind: string, id: number): FrontInfo | null {
+  if (kind === "book") {
+    const r = db
+      .prepare(
+        `SELECT b.id, b.title, b.read_date AS readDate, b.rating AS rating,
+                (SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                  WHERE ba.book_id = b.id ORDER BY ba.ord LIMIT 1) AS author
+           FROM reviews r JOIN books b ON b.id = r.book_id
+          WHERE r.id = ?`
+      )
+      .get(id) as any;
+    if (!r) return null;
+    const day = String(r.readDate || "").slice(0, 10);
+    return {
+      day: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "",
+      rate: numOrNull(r.rating),
+      own: (r.author ? r.author + "-" : "") + "《" + String(r.title || "") + "》",
+      cats: catsOf(db, String(r.id))
+    };
+  }
+  if (kind === "series") {
+    const s = db
+      .prepare("SELECT s.id, s.name FROM reviews r JOIN series s ON s.id = r.series_id WHERE r.id = ?")
+      .get(id) as any;
+    if (!s) return null;
+    const sid = Number(s.id);
+    const last = db
+      .prepare(
+        `SELECT MAX(b.read_date) AS d FROM books b
+          WHERE b.series_id = ? AND b.deleted_at IS NULL`
+      )
+      .get(sid) as any;
+    const rated = db
+      .prepare(
+        `SELECT b.rating AS rating FROM books b
+          WHERE b.series_id = ? AND b.deleted_at IS NULL AND b.rating > 0
+            AND b.read_date IS NOT NULL AND b.read_date <> ''
+          ORDER BY b.read_date DESC, b.series_index IS NULL, b.series_index, b.title LIMIT 1`
+      )
+      .get(sid) as any;
+    const day = String(last?.d || "").slice(0, 10);
+    const au = seriesAuthor(db, sid);
+    const first = firstBookOfSeries(db, sid);
+    return {
+      day: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "",
+      rate: numOrNull(rated?.rating),
+      own: (au ? au + "-" : "") + seriesTitle(String(s.name || "")),
+      cats: first ? catsOf(db, String(first.id)) : []
+    };
+  }
+  return null;
+}
+
+function numOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 10) / 10 : null;
 }
 
 /**
  * 拼上首部再落盘。只有挂到书或系列上的才写：未匹配与草稿没有关联对象，
  * 硬塞一个空头子反而看不懂。库里存的始终是正文，首部是落盘时现拼的。
+ *
+ * existing 是磁盘上那份现在的内容。给了它，首部里的「书籍」「系列」以文件为准，
+ * 免得把人在 Obsidian 里手改的那行盖回去。这两行是文件权威，其余三行由库单向写出。
+ *
+ * 设置 review_front 关掉时整块不写，这是「撤销标签」的落点：
+ * 只删文件里那一块而不改这个开关，下一次同步又会把它补回来。
  */
-function compose(db: DB, kind: string, id: number, row?: any): string {
+function compose(db: DB, kind: string, id: number, existing?: string): string {
   const body = mdOf(db, kind, id);
   if (kind !== "book" && kind !== "series") return body;
-  const r =
-    row ||
-    (db
-      .prepare(
-        `SELECT r.happened_at AS happenedAt, b.title AS bookTitle, b.rating AS rating, s.name AS seriesName
-           FROM reviews r LEFT JOIN books b ON b.id = r.book_id LEFT JOIN series s ON s.id = r.series_id
-          WHERE r.id = ?`
-      )
-      .get(id) as any);
-  if (!r) return body;
-  /* 三项一律写出来：没有值也留个空行，字段齐了才好照着填 */
-  const day = String(r.happenedAt || "").slice(0, 10);
-  const rate = r.rating === null || r.rating === undefined ? NaN : Number(r.rating);
+  if (getSetting(db, FRONT_SWITCH, "1") === "0") return body;
+  const info = frontOf(db, kind, id);
+  if (!info) return body;
+
+  const cur = existing ? splitFront(existing).fields : {};
+  const key = kind === "book" ? "书籍" : "系列";
+  /* 文件里那行认得出、而且带上了作者，就照它写；只写了个书名的是老格式，按现在的规矩补上作者 */
+  const fromFile = ownOf(db, kind, cur[key]);
+  const own = /-《/.test(fromFile) ? fromFile : info.own;
+
   const lines: string[] = [
-    "阅读时间:" + (/^\d{4}-\d{2}-\d{2}$/.test(day) ? " " + day : ""),
-    "评分:" + (Number.isFinite(rate) && rate > 0 ? " " + Math.round(rate * 10) / 10 : "")
+    "阅读时间:" + (info.day ? " " + info.day : ""),
+    "评分:" + (info.rate ? " " + info.rate : ""),
+    key + ":" + (own ? " " + own : ""),
+    "分类:" + (info.cats.length ? " " + info.cats.join("、") : "")
   ];
-  if (kind === "book" && r.bookTitle) lines.push("书籍: 《" + r.bookTitle + "》");
-  if (kind === "series" && r.seriesName) lines.push("系列: " + seriesTitle(String(r.seriesName)));
   return "---\n" + lines.join("\n") + "\n---\n\n" + body;
+}
+
+/** 磁盘上那份的现状，读不到就当没有 */
+function readText(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 文件开头写的「书籍」或「系列」。认得出对应的书或系列才照它写，那是文件权威；
+ * 认不出说明手写错了，不能把一个不存在的名字一直留在文件里，交给库里的值纠回来。
+ */
+function ownOf(db: DB, kind: string, v: string | undefined): string {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  const lab = splitLabel(s);
+  if (!lab.title) return "";
+  const hit = kind === "book" ? !!findBook(db, lab.title, lab.author) : findSeries(db, lab.title, lab.author) !== null;
+  return hit ? s : "";
 }
 
 /**
@@ -333,7 +532,8 @@ export function writeOne(db: DB, dir: string, kind: string, id: number, prevName
 
   const old = prevName || map[key];
   if (old && old !== final) renameIn(dir, old, final);
-  writeIfChanged(path.join(dir, final), compose(db, kind, id));
+  const target = path.join(dir, final);
+  writeIfChanged(target, compose(db, kind, id, readText(target)));
   map[key] = final;
   saveMap(db, map);
   return true;
@@ -427,7 +627,8 @@ export function exportAll(db: DB, dir: string): ReviewIoSummary {
     const final = pickName(want, taken);
     taken.add(final);
     map[key] = final;
-    if (writeIfChanged(path.join(dir, final), compose(db, r.kind, r.id))) out.written++;
+    const target = path.join(dir, final);
+    if (writeIfChanged(target, compose(db, r.kind, r.id, readText(target)))) out.written++;
   }
 
   /* 改过名的、已经删掉的，旧名字那份收走 */
@@ -438,6 +639,119 @@ export function exportAll(db: DB, dir: string): ReviewIoSummary {
     removeFile(dir, v);
   }
   saveMap(db, map);
+  return out;
+}
+
+/**
+ * 把整个书评目录复制一份。不用 cpSync：宿主机上装了删除与复制的垫片，
+ * 自己走一遍目录最省事，也不会因为某个文件占用就整批退出。
+ */
+function copyDir(from: string, to: string): number {
+  let n = 0;
+  fs.mkdirSync(to, { recursive: true });
+  for (const e of fs.readdirSync(from, { withFileTypes: true })) {
+    const a = path.join(from, e.name);
+    const b = path.join(to, e.name);
+    if (e.isDirectory()) n += copyDir(a, b);
+    else {
+      fs.copyFileSync(a, b);
+      n++;
+    }
+  }
+  return n;
+}
+
+function backupReviews(dir: string, backupDir?: string): string {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const bak = backupDir || path.join(path.dirname(dir), "backups", "reviews-" + stamp);
+  copyDir(dir, bak);
+  return bak;
+}
+
+/**
+ * 现有书评一次性把开头那块补齐。
+ *
+ * 只动开头，正文一个字节不碰：写完立刻把拆出来的正文与写之前比一次，
+ * 不一致就整批停下，不再往下跑。
+ *
+ * 已经齐的跳过，重复点没有副作用。动作之前把整个目录复制一份到 backups 下面，
+ * 库里不动，所以备份只备文件。
+ */
+export function fillFront(db: DB, dir: string, backupDir?: string): ReviewIoSummary {
+  const out = empty();
+  out.dir = dir;
+  if (!dir) return out;
+  fs.mkdirSync(dir, { recursive: true });
+
+  try {
+    out.backup = backupReviews(dir, backupDir);
+  } catch (e) {
+    out.msgs.push("备份没做成，这次不补了");
+    return out;
+  }
+
+  /* 补之前把开关打开，否则 compose 会因为「标签已撤销」拒绝写首部 */
+  setSetting(db, FRONT_SWITCH, "1");
+  const map = loadMap(db);
+  const rows = listReviews(db).filter((r) => r.kind === "book" || r.kind === "series");
+
+  for (const r of rows) {
+    const key = keyOf(r.kind, r.id);
+    const mapped = map[key] || "";
+    const canon = reviewFileName(db, r);
+    const name = mapped && fs.existsSync(path.join(dir, mapped)) ? mapped : canon;
+    if (!name) continue;
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) continue;
+
+    const cur = readText(file);
+    const next = compose(db, r.kind, r.id, cur);
+    if (next === cur) {
+      out.skipped++;
+      continue;
+    }
+    /* 正文必须原样：这一条挡的是「补标签顺手改了正文」这种最不该出的事 */
+    if (splitFront(next).body !== splitFront(cur).body) {
+      out.msgs.push("《" + (r.title || name) + "》补完正文对不上，停在它这里，前面的已写");
+      break;
+    }
+    writeIfChanged(file, next);
+    map[key] = name;
+    out.filled = (out.filled || 0) + 1;
+  }
+
+  saveMap(db, map);
+  return out;
+}
+
+/**
+ * 撤销标签。把开头那块整段删掉，同时把开关关掉。
+ *
+ * 只删文件那一块是不够的：库里每次导出都会按现有规则重拼首部，
+ * 下一次同步或保存就把删掉的补回来，撤销等于白做。
+ */
+export function stripFront(db: DB, dir: string, backupDir?: string): ReviewIoSummary {
+  const out = empty();
+  out.dir = dir;
+  if (!dir || !fs.existsSync(dir)) return out;
+
+  try {
+    out.backup = backupReviews(dir, backupDir);
+  } catch (e) {
+    out.msgs.push("备份没做成，这次不撤了");
+    return out;
+  }
+
+  setSetting(db, FRONT_SWITCH, "0");
+  for (const f of fs.readdirSync(dir)) {
+    if (!/\.md$/i.test(f)) continue;
+    const file = path.join(dir, f);
+    const cur = readText(file);
+    const parts = splitFront(cur);
+    if (!parts.hasFront) continue;
+    writeIfChanged(file, parts.body);
+    out.filled = (out.filled || 0) + 1;
+  }
   return out;
 }
 
