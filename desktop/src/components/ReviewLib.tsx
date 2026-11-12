@@ -63,6 +63,7 @@ export default function ReviewLib({
   const [del, setDel] = useState<ReviewRow | null>(null);
   const [pick, setPick] = useState<ReviewRow | null>(null);
   const [pickSer, setPickSer] = useState<ReviewRow | null>(null);
+  const [stripAsk, setStripAsk] = useState(false);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState("");
   const richRef = useRef<RichHandle | null>(null);
@@ -307,6 +308,44 @@ export default function ReviewLib({
     }
   };
 
+  /* 补齐开头那块：阅读时间、评分、书籍或系列、分类。只动开头，正文不碰 */
+  const doFillFront = async () => {
+    setBusy("补标签中…");
+    try {
+      const r = await api.fillReviewFront();
+      if (!r) {
+        say("补标签失败");
+        return;
+      }
+      const n = r.filled || 0;
+      say(n ? "补标签：" + n + " 篇补齐，跳过 " + r.skipped + " 篇已齐" : "补标签：都齐了，没动一篇");
+      if (r.backup) window.setTimeout(() => say("备份在 " + r.backup), 3000);
+      onChanged();
+      onRefreshDir?.();
+    } finally {
+      setBusy("");
+    }
+  };
+
+  /* 撤销标签：开头那块整段删掉，之后不再自动写 */
+  const doStripFront = async () => {
+    setBusy("撤销中…");
+    try {
+      const r = await api.stripReviewFront();
+      if (!r) {
+        say("撤销失败");
+        return;
+      }
+      const n = r.filled || 0;
+      say(n ? "已撤掉 " + n + " 篇的开头标签" : "没有可撤的标签");
+      if (r.backup) window.setTimeout(() => say("备份在 " + r.backup), 3000);
+      onChanged();
+      onRefreshDir?.();
+    } finally {
+      setBusy("");
+    }
+  };
+
   const diag = () => {
     say(
       "桌面版 · 库内 " +
@@ -325,11 +364,19 @@ export default function ReviewLib({
     { key: "s1", label: "", sep: true },
     { key: "openDir", label: "打开书评文件夹" },
     { key: "s2", label: "", sep: true },
+    { key: "fillFront", label: "补齐书评标签…" },
+    { key: "stripFront", label: "撤销标签" },
+    { key: "s3", label: "", sep: true },
     { key: "diag", label: "存储自检" }
   ];
 
   const pickMenu = async (k: string) => {
     if (k === "importFiles" || k === "importFolder" || k === "export") return runIo(k);
+    if (k === "fillFront") return doFillFront();
+    if (k === "stripFront") {
+      setStripAsk(true);
+      return;
+    }
     if (k === "openDir") {
       await api.openReviewDir();
       return;
@@ -542,6 +589,7 @@ export default function ReviewLib({
                 <div className="rvm-stat">
                   {words} 字 · {stat || "停手 0.7 秒自动保存"}
                   {dirInfo?.dir ? " · 同步目录已接" : ""}
+                  {cur.kind === "book" || cur.kind === "series" ? " · 开头的时间、评分、分类由库里写" : ""}
                 </div>
               </div>
             ) : (
@@ -583,6 +631,18 @@ export default function ReviewLib({
 
       {pickSer ? (
         <SeriesPicker hint={"把《" + (pickSer.title || "未命名") + "》挂成整个系列的总评"} onPick={doAssociateSeries} onCancel={() => setPickSer(null)} />
+      ) : null}
+
+      {stripAsk ? (
+        <Confirm
+          text="把每篇 md 开头那块标签删掉？正文不动，删之前会先整目录备份一份。之后导入的新书评也不再自动加标签，想加回来点「补齐书评标签」。"
+          okText="撤掉"
+          onOk={() => {
+            setStripAsk(false);
+            doStripFront();
+          }}
+          onCancel={() => setStripAsk(false)}
+        />
       ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}
