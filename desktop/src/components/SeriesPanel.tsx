@@ -51,7 +51,7 @@ export default function SeriesPanel({ series, onClose, onOpenBook, onWriteReview
           <div className="sb-list">
             {books.map((b) => (
               <div key={b.id} className="sb-i" onClick={() => onOpenBook(b.id)}>
-                {b.cover ? <img className="sb-cov" src={coverUrl(b.cover)} alt="" loading="lazy" /> : <div className="sb-cov empty" />}
+                {b.cover ? <img className="sb-cov" src={coverUrl(b.cover, b.coverV)} alt="" loading="lazy" /> : <div className="sb-cov empty" />}
                 <div className="sb-b">
                   <div className="sb-t">{b.title}</div>
                   <div className="sb-m">

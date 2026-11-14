@@ -31,7 +31,7 @@ export default function GridView({ rows, selected, onSelect, onCtx }: GridProps)
           title={b.title}
         >
           {b.cover ? (
-            <img className="cov" src={coverUrl(b.cover)} alt="" loading="lazy" />
+            <img className="cov" src={coverUrl(b.cover, b.coverV)} alt="" loading="lazy" />
           ) : (
             <div className="cov empty">无封面</div>
           )}

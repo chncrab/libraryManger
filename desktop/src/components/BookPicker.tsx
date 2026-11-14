@@ -54,7 +54,7 @@ export default function BookPicker({ hint, onPick, onCancel }: Props) {
               onClick={() => setSel(b.id)}
               onDoubleClick={() => onPick(b.id)}
             >
-              {b.cover ? <img src={coverUrl(b.cover)} alt="" /> : <div className="bp-cov" />}
+              {b.cover ? <img src={coverUrl(b.cover, b.coverV)} alt="" /> : <div className="bp-cov" />}
               <div className="bp-t">
                 <div>{b.title}</div>
                 <div className="dim">

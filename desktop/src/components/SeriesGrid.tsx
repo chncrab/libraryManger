@@ -8,7 +8,7 @@ export default function SeriesGrid({ list, onOpen }: { list: SeriesInfo[]; onOpe
     <div className="sgrid">
       {list.map((s) => (
         <div key={s.id} className="scard" onClick={() => onOpen(s)} title={s.name}>
-          {s.cover ? <img className="scov" src={coverUrl(s.cover)} alt="" loading="lazy" /> : <div className="scov empty">无封面</div>}
+          {s.cover ? <img className="scov" src={coverUrl(s.cover, s.coverV)} alt="" loading="lazy" /> : <div className="scov empty">无封面</div>}
           <div className="st">{s.label}</div>
           <div className="ss">
             {s.n} 册 · 已读 {s.read}
