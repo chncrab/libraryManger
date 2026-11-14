@@ -24,7 +24,7 @@ export function rebuildFts(db: DB, id: string): void {
   const r = db
     .prepare(
       `SELECT b.rowid AS rid, b.title, b.subtitle, b.original_title, b.note,
-              COALESCE(s.name, '') AS series,
+              TRIM(COALESCE(s.name, '') || ' ' || COALESCE(s.zh_name, '')) AS series,
               (SELECT group_concat(a.name, '、') FROM book_authors ba JOIN authors a ON a.id = ba.author_id
                  WHERE ba.book_id = b.id) AS authors
          FROM books b LEFT JOIN series s ON s.id = b.series_id WHERE b.id = ?`

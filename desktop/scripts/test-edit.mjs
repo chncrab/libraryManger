@@ -127,6 +127,52 @@ const f = facets(db, "全部");
 t("分类分面有 id", typeof f.categories[0].id === "number");
 t("分类分面有 parentId 字段", "parentId" in f.categories[0]);
 
+console.log("\n[9] 系列的原名与译名");
+{
+  const { listSeries } = require("../dist-electron/electron/services/seriesService.js");
+  const all = listSeries(db, "");
+  const noZh = db.prepare("SELECT COUNT(*) AS n FROM series WHERE COALESCE(zh_name, '') = ''").get().n;
+  t("每个系列都有译名", noZh === 0, "缺 " + noZh);
+  t("系列条数与库里一致", all.length === db.prepare("SELECT COUNT(*) AS n FROM series").get().n);
+  /* 挑一个真有书、原名与译名不一样的系列当样本，不写死具体名字 */
+  const pick = all.find(
+    (s) =>
+      s.zhName &&
+      s.original &&
+      s.zhName !== s.original &&
+      s.zhName.length >= 3 &&
+      s.original.length >= 3 &&
+      Number(s.n) > 1
+  );
+  t("列表按译名显示", !!pick && pick.label === pick.zhName, pick && pick.label);
+  t("原名单独带出来", !!pick && pick.original === pick.name, pick && pick.original);
+  const cn = all.find((s) => s.zhName === s.name && Number(s.n) > 0);
+  t("中文原创的原名与译名同值", !!cn && cn.zhName === cn.name);
+  t("同值时界面只显示一行", !!cn && cn.label === cn.original);
+
+  /* 译名要能搜到书，原名也要能搜到，两条路都得通 */
+  const byZh = listBooks(db, { q: pick.zhName, limit: 5 }).total;
+  const byOrig = listBooks(db, { q: pick.original, limit: 5 }).total;
+  t("译名搜得到", byZh > 0, "命中 " + byZh);
+  t("原名也搜得到", byOrig > 0, "命中 " + byOrig);
+
+  /* 界面上交回去的是译名，保存时不能因此新建一个同名系列 */
+  const before = db.prepare("SELECT COUNT(*) AS n FROM series").get().n;
+  const row = db
+    .prepare("SELECT id FROM books WHERE series_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1")
+    .get(pick.id);
+  const book = { id: row.id, seriesId: pick.id };
+  const kept = updateBook(db, book.id, { seriesName: pick.zhName });
+  t("按译名保存不新建系列", db.prepare("SELECT COUNT(*) AS n FROM series").get().n === before);
+  t("系列还是原来那个", kept.seriesId === book.seriesId, String(kept.seriesId));
+
+  /* 原名交回去同样认得出，认不出就会多一个重复系列 */
+  const kept2 = updateBook(db, book.id, { seriesName: pick.original });
+  t("按原名保存也认得", kept2.seriesId === book.seriesId && db.prepare("SELECT COUNT(*) AS n FROM series").get().n === before);
+  t("书的系列显示回译名", kept2.seriesName === pick.zhName, kept2.seriesName);
+  t("书的原名跟着带出", kept2.seriesOriginal === pick.original, kept2.seriesOriginal);
+}
+
 /* 收尾：把测试库清掉，免得下次跑基数对不上 */
 deleteBook(db, cp2.id);
 deleteBook(db, cp.id);

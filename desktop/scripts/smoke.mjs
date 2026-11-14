@@ -81,24 +81,32 @@ check(
 
 // 2 左栏分面跟媒介走：切漫画后「推理」的计数应该变小
 const catAll = await facetN("推理");
+const numOf = (txt) => Number((String(txt).match(/共\s*(\d+)/) || [])[1] || 0);
+const allTotalN = numOf(await totalText());
 await clickText(".seg button", "漫画");
 await wait(900);
 let t = await totalText();
-check("切到漫画后总数 518", t.includes("518"), t.slice(0, 20));
+const mangaTotalN = numOf(t);
+check("切到漫画后总数少于全部", allTotalN > 0 && mangaTotalN > 0 && mangaTotalN < allTotalN, allTotalN + " → " + mangaTotalN);
 const catManga = await facetN("推理");
 check("左栏分面跟着媒介重算", catAll > 0 && catManga > 0 && catManga !== catAll, "全部 " + catAll + " → 漫画 " + catManga);
 const decAll = await js("document.querySelectorAll('.side h4').length");
 check("左栏档数 7（分类/封面/实体书/电子书/阅读状态/出版年代/系列）", decAll === 7, "实际 " + decAll);
 
-// 3 回全部再搜索（两字走 LIKE）
+// 3 回全部再搜索（两字走 LIKE）。查询词取列表里第一本书标题的开头两个字，不写死书名
 await clickText(".seg button", "全部");
 await wait(1000);
+const probe = await js("((document.querySelector('.card .t')||{}).textContent||'').trim().slice(0, 2)");
 await js(`(() => { const i = document.querySelector('.search'); const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-  s.call(i, '柯南'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  s.call(i, ${JSON.stringify(probe)}); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 await wait(1200);
 t = await totalText();
 const hitTitle = await js("(document.querySelector('.card .t')||{}).textContent||''");
-check("搜「柯南」有命中且标题含柯南", /共 [1-9]/.test(t) && hitTitle.includes("柯南"), t.slice(0, 14) + " / " + hitTitle);
+check(
+  "搜两字有命中且标题含这两个字",
+  probe.length === 2 && /共 [1-9]/.test(t) && hitTitle.includes(probe),
+  t.slice(0, 14) + " / " + hitTitle
+);
 
 // 4 清空搜索，切表格
 await js(`(() => { const i = document.querySelector('.search'); const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
@@ -227,13 +235,14 @@ check("列表在左、正文在右", rvLeftX !== "0/0", rvLeftX);
 // 7 回书架点分类
 await clickText(".seg button", "书架");
 await wait(700);
+const catN = await facetN("推理");
 const catClicked = await js(`(() => {
   const el = [...document.querySelectorAll('.facet')].find(e => e.textContent.trim().startsWith('推理'));
   if (!el) return false; el.click(); return true;
 })()`);
 await wait(900);
 t = await totalText();
-check("点分类「推理」筛出 708 本", catClicked && t.includes("708"), t.slice(0, 16));
+check("点分类「推理」筛出的数量与分面一致", catClicked && catN > 0 && t.includes("共 " + catN + " 本"), "分面 " + catN + "，列表 " + t.slice(0, 16));
 
 // 7b 预置大分类：点「题材」把旗下小标签的书一起筛出来，树上的数字要对得上
 const topN = await facetN("题材");
@@ -247,14 +256,20 @@ check("大分类「题材」的计数与筛选结果一致", topClicked && topN 
 await js(`document.querySelectorAll('.chip.on').forEach(e => e.click())`);
 await wait(800);
 
-// 8 系列分面
+// 8 系列分面。点左栏第一个系列，数量与那条分面对得上就算过，不针对某个系列
+const serN = await js(`(() => {
+  const el = document.querySelector('.facet.ser');
+  if (!el) return -1;
+  const n = el.querySelector('.n');
+  return n ? Number(n.textContent) : 0;
+})()`);
 const serClicked = await js(`(() => {
-  const el = [...document.querySelectorAll('.facet.ser')].find(e => e.textContent.includes('名侦探柯南'));
+  const el = document.querySelector('.facet.ser');
   if (!el) return false; el.click(); return true;
 })()`);
 await wait(900);
 t = await totalText();
-check("点系列「名侦探柯南」有结果", serClicked && /共 \d+/.test(t), t.slice(0, 16));
+check("点系列分面筛出的数量与分面一致", serClicked && serN > 0 && t.includes("共 " + serN + " 本"), "分面 " + serN + "，列表 " + t.slice(0, 16));
 
 /* 写操作会改库，跑之前请用副本库启动：LIBRARY_DB=data/smoke.db */
 
