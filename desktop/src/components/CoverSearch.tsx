@@ -13,7 +13,7 @@ interface Props {
 /**
  * 搜封面。输入框吃书名、作者、ISBN 三种，十三位数字走 ISBN 那条，
  * 其余当关键词。候选铺成网格，点一张就落盘，落盘仍走换封面那条老路，
- * 命名、原图移位、撤销都还是原来那套。
+ * 命名与换图都还是原来那套。
  */
 export default function CoverSearch({ bookId, bookTitle, bookAuthors, onApplied, onClose }: Props) {
   const [q, setQ] = useState(bookTitle);

@@ -36,7 +36,7 @@ export function coverBaseName(db: DB, bookId: string): string {
 
 /**
  * 不撞车的文件名。别的书占了这个名字、或者目录里已经躺着同名文件，就往后加 -2 -3。
- * 自己现在这张不算占用，换图时允许覆盖，撤销靠 cover_history 里另一份。
+ * 自己现在这张不算占用，换图时允许直接覆盖。
  */
 export function uniqueCoverName(db: DB, bookId: string, coversDir: string, ext: string): string {
   const base = coverBaseName(db, bookId) || bookId;
@@ -46,8 +46,6 @@ export function uniqueCoverName(db: DB, bookId: string, coversDir: string, ext: 
       String(r.cover_file)
     )
   );
-  const hist = db.prepare("SELECT orig_file FROM cover_history WHERE book_id = ?").get(bookId) as any;
-  if (hist && hist.orig_file) owned.add(String(hist.orig_file));
 
   let name = base + ext;
   let i = 2;
@@ -59,20 +57,8 @@ export function uniqueCoverName(db: DB, bookId: string, coversDir: string, ext: 
 }
 
 /**
- * 原图暂放的位置。封面名由书名派生，换图时新名与当前这张同名，
- * 先把原图挪到「-原图」上，撤销才退得回去。
- */
-function holdFor(coversDir: string, name: string, ext: string): string {
-  const stem = name.slice(0, name.length - ext.length);
-  let cand = stem + "-原图" + ext;
-  let i = 2;
-  while (fs.existsSync(path.join(coversDir, cand))) cand = stem + "-原图" + i++ + ext;
-  return cand;
-}
-
-/**
  * 书名、作者、系列序号变了以后，封面文件跟着改名。
- * 这是真改名，不重新生成图片；历史里那一份若指着旧名也一并改过来。
+ * 这是真改名，不重新生成图片。
  */
 export function renameCoverFor(db: DB, bookId: string, coversDir: string): string {
   const b = db.prepare("SELECT cover_file FROM books WHERE id = ?").get(bookId) as any;
@@ -93,21 +79,13 @@ export function renameCoverFor(db: DB, bookId: string, coversDir: string): strin
     return old;
   }
   const t = new Date().toISOString();
-  const run = db.transaction(() => {
-    db.prepare("UPDATE books SET cover_file = ?, updated_at = ? WHERE id = ?").run(want, t, bookId);
-    db.prepare("UPDATE cover_history SET orig_file = ? WHERE book_id = ? AND orig_file = ?").run(want, bookId, old);
-  });
-  run();
+  db.prepare("UPDATE books SET cover_file = ?, updated_at = ? WHERE id = ?").run(want, t, bookId);
   return want;
 }
 
 /**
  * 换封面：把选中的图片拷进库旁的 covers 目录，改 books.cover_file。
- * 第一次替换前把原来的文件名记进 cover_history，撤销时退回去；
- * 再次替换时删掉上一张自定义图，历史仍指向最初那张，不越退越乱。
- *
- * 封面名由书名派生，换图时新名字往往就是当前这张的名字，
- * 直接写下去会把原图盖掉、撤销时无图可退，所以先把原图挪到「-原图」位上。
+ * 一本一张，换下来的旧图当场删掉，目录里不留副本。
  */
 export function setCoverFromFile(db: DB, bookId: string, src: string, coversDir: string): CoverResult {
   const b = db.prepare("SELECT cover_file FROM books WHERE id = ?").get(bookId) as any;
@@ -120,99 +98,54 @@ export function setCoverFromFile(db: DB, bookId: string, src: string, coversDir:
   }
   fs.mkdirSync(coversDir, { recursive: true });
   const name = uniqueCoverName(db, bookId, coversDir, ext);
-
-  const t = new Date().toISOString();
-  const hist = db.prepare("SELECT orig_file FROM cover_history WHERE book_id = ?").get(bookId) as any;
+  const dest = path.join(coversDir, name);
   const cur = b.cover_file ? path.basename(String(b.cover_file)) : "";
-  const curPath = cur ? path.join(coversDir, cur) : "";
-  /* 当前这张就是「原图」时，同名覆盖前先把它挪开 */
-  const isOrig = hist ? String(hist.orig_file || "") === cur : !!cur;
-  let hold = "";
-  if (isOrig && cur === name && !!curPath && fs.existsSync(curPath)) {
-    const cand = holdFor(coversDir, name, ext);
-    try {
-      fs.renameSync(curPath, path.join(coversDir, cand));
-      hold = cand;
-    } catch {
-      hold = "";
-    }
+
+  /* 选中的就是目录里这一张时，拷自己会报错，跳过拷贝 */
+  try {
+    if (path.resolve(src) !== path.resolve(dest)) fs.copyFileSync(src, dest);
+  } catch {
+    return { ok: false, msg: "图片写不进封面目录" };
   }
 
-  const run = db.transaction(() => {
-    if (!hist) {
-      db.prepare("INSERT INTO cover_history (book_id, orig_file, replaced_at) VALUES (?, ?, ?)").run(
-        bookId,
-        hold || b.cover_file || "",
-        t
-      );
-    } else if (hold) {
-      db.prepare("UPDATE cover_history SET orig_file = ? WHERE book_id = ?").run(hold, bookId);
-    } else if (b.cover_file && b.cover_file !== hist.orig_file && b.cover_file !== name) {
-      /* 上一张是自己换的，留着没用，删掉省空间 */
-      const old = path.join(coversDir, path.basename(b.cover_file));
-      if (fs.existsSync(old)) {
-        try {
-          fs.rmSync(old);
-        } catch {
-          /* 占用中就算了 */
-        }
-      }
-    }
-    fs.copyFileSync(src, path.join(coversDir, name));
-    db.prepare("UPDATE books SET cover_file = ?, updated_at = ? WHERE id = ?").run(name, t, bookId);
-  });
-  run();
-  return { ok: true, cover: name };
-}
+  const t = new Date().toISOString();
+  db.prepare("UPDATE books SET cover_file = ?, updated_at = ? WHERE id = ?").run(name, t, bookId);
 
-/** 撤销自定义封面，退回替换前那张。本来就没封面的退回空 */
-export function resetCover(db: DB, bookId: string, coversDir: string): CoverResult {
-  const hist = db.prepare("SELECT orig_file FROM cover_history WHERE book_id = ?").get(bookId) as any;
-  const b = db.prepare("SELECT cover_file FROM books WHERE id = ?").get(bookId) as any;
-  if (!b) return { ok: false, msg: "书不存在" };
-  if (!hist) return { ok: false, msg: "这本书没有换过封面" };
-  const orig = String(hist.orig_file || "");
-
-  if (b.cover_file && b.cover_file !== orig) {
-    const p = path.join(coversDir, path.basename(b.cover_file));
-    if (fs.existsSync(p)) {
+  /* 换了名字的旧图删掉；同名的话上面那次拷贝已经把它盖掉了 */
+  if (cur && cur !== name) {
+    const old = path.join(coversDir, cur);
+    if (fs.existsSync(old)) {
       try {
-        fs.rmSync(p);
+        fs.rmSync(old, { force: true });
       } catch {
         /* 占用中就算了 */
       }
     }
   }
+  return { ok: true, cover: name };
+}
 
-  /* 原图可能停在「-原图」位上，退回去时按当前书名重新算规范名 */
-  let final = orig;
-  if (orig && coversDir) {
-    const from = path.join(coversDir, path.basename(orig));
-    if (fs.existsSync(from)) {
-      const ext = (path.extname(orig) || ".jpg").toLowerCase();
-      db.prepare("UPDATE books SET cover_file = ? WHERE id = ?").run(orig, bookId);
-      /* 这条历史到此为止，先摘掉再算名字。留着它等于告诉命名函数
-         「这张图被别人占了」，恢复的正是自己那张，会平白让位成 -2 */
-      db.prepare("DELETE FROM cover_history WHERE book_id = ?").run(bookId);
-      const want = uniqueCoverName(db, bookId, coversDir, ext);
-      if (want !== orig) {
-        try {
-          fs.renameSync(from, path.join(coversDir, want));
-          final = want;
-        } catch {
-          final = orig;
-        }
+/** 移除封面：文件删掉，cover_file 置空，回到没有封面的状态 */
+export function resetCover(db: DB, bookId: string, coversDir: string): CoverResult {
+  const b = db.prepare("SELECT cover_file FROM books WHERE id = ?").get(bookId) as any;
+  if (!b) return { ok: false, msg: "书不存在" };
+  const cur = b.cover_file ? path.basename(String(b.cover_file)) : "";
+  if (!cur) return { ok: false, msg: "这本书没有封面" };
+
+  db.prepare("UPDATE books SET cover_file = '', updated_at = ? WHERE id = ?").run(new Date().toISOString(), bookId);
+  /* 副本可能还指着这张图，别人在用就只摘引用 */
+  const shared = db.prepare("SELECT COUNT(*) AS n FROM books WHERE cover_file = ?").get(cur) as any;
+  if (Number((shared && shared.n) || 0) === 0) {
+    const p = path.join(coversDir, cur);
+    if (fs.existsSync(p)) {
+      try {
+        fs.rmSync(p, { force: true });
+      } catch {
+        /* 占用中就算了 */
       }
     }
   }
-
-  const t = new Date().toISOString();
-  const run = db.transaction(() => {
-    db.prepare("UPDATE books SET cover_file = ?, updated_at = ? WHERE id = ?").run(final, t, bookId);
-    db.prepare("DELETE FROM cover_history WHERE book_id = ?").run(bookId);
-  });
-  run();
-  return { ok: true, cover: hist.orig_file || "" };
+  return { ok: true, cover: "" };
 }
 
 /** 复制条目时给副本一份独立图片，改副本的封面不会动到原书 */

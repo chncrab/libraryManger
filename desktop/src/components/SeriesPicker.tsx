@@ -30,7 +30,9 @@ export default function SeriesPicker({
 
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
-    return list.filter((s) => !k || s.label.toLowerCase().includes(k) || s.name.toLowerCase().includes(k));
+    return list.filter(
+      (s) => !k || s.label.toLowerCase().includes(k) || s.name.toLowerCase().includes(k) || s.original.toLowerCase().includes(k)
+    );
   }, [list, q]);
 
   return (
@@ -60,6 +62,7 @@ export default function SeriesPicker({
                 <div>
                   {s.label}
                   <span className="dim"> · {s.mediaType}</span>
+                  {s.original && s.original !== s.label ? <span className="dim"> · {s.original}</span> : null}
                 </div>
                 <div className="dim">{s.n} 册{s.read ? " · 已读 " + s.read : ""}</div>
               </div>

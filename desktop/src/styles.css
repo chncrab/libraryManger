@@ -678,6 +678,8 @@ button, input, select { font-family: inherit; }
 .ctl input[type="date"] { color-scheme: dark; }
 .ctl .num { width: 72px; flex: none; }
 .drow2 { display: flex; gap: 8px; align-items: center; }
+/* 所属系列的原名，跟在译名后头，长了就截断，不挤走两个输入框 */
+.dorig { font-size: 11.5px; min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drow2 .chk { display: flex; align-items: center; gap: 5px; color: var(--fg2); font-size: 12px; flex: none; }
 .drow2 .chk input { width: auto; }
 
@@ -878,6 +880,16 @@ button, input, select { font-family: inherit; }
   overflow: hidden;
 }
 .ss { margin-top: 2px; font-size: 10.5px; color: var(--fg3); }
+/* 系列卡片上的原名，淡一档，最多一行 */
+.sorig {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--fg3);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ss b { color: var(--acc2); font-weight: normal; }
 
 /* 系列弹层里的书目 */

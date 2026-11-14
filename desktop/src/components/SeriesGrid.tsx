@@ -7,9 +7,11 @@ export default function SeriesGrid({ list, onOpen }: { list: SeriesInfo[]; onOpe
   return (
     <div className="sgrid">
       {list.map((s) => (
-        <div key={s.id} className="scard" onClick={() => onOpen(s)} title={s.name}>
+        <div key={s.id} className="scard" onClick={() => onOpen(s)} title={s.original && s.original !== s.label ? s.label + " · " + s.original : s.label}>
           {s.cover ? <img className="scov" src={coverUrl(s.cover, s.coverV)} alt="" loading="lazy" /> : <div className="scov empty">无封面</div>}
           <div className="st">{s.label}</div>
+          {/* 原名与译名不同才多一行，同名系列与中文原创不占这一行 */}
+          {s.original && s.original !== s.label ? <div className="sorig">{s.original}</div> : null}
           <div className="ss">
             {s.n} 册 · 已读 {s.read}
             {s.avg != null ? <b> ★ {s.avg.toFixed(1)}</b> : <span className="dim"> ★ —</span>}

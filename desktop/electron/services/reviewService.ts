@@ -6,8 +6,9 @@ const BASE = `
 SELECT r.id, r.book_id AS bookId, r.series_id AS seriesId, r.grade, r.md, r.file_name AS fileName,
        COALESCE(r.happened_at, r.updated_at) AS happenedAt,
        r.updated_at AS updatedAt,
-       COALESCE(b.title, s.name, r.name, '') AS title,
+       COALESCE(b.title, NULLIF(s.zh_name, ''), s.name, r.name, '') AS title,
        s.name AS seriesName,
+       s.zh_name AS seriesZh,
        (SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
           WHERE ba.book_id = r.book_id ORDER BY ba.ord LIMIT 1) AS author
   FROM reviews r
@@ -18,7 +19,8 @@ function shape(rows: any[], kind: ReviewRow["kind"]): ReviewRow[] {
   return rows.map((r) => ({
     ...r,
     kind,
-    seriesLabel: r.seriesName ? seriesLabel(r.seriesName) : undefined,
+    /* 列表上给人看的是译名，文件名另走 seriesName 里的原名，两件事分开 */
+    seriesLabel: r.seriesName ? seriesLabel(r.seriesZh || r.seriesName) : undefined,
     author: r.author || ""
   }));
 }

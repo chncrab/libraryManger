@@ -342,8 +342,11 @@ function normSeries(s: string): string {
 function findSeries(db: DB, name: string, author: string): number | null {
   const want = normSeries(name);
   if (!want) return null;
-  const rows = db.prepare("SELECT id, name FROM series ORDER BY id").all() as any[];
-  const hits = rows.filter((r) => normSeries(String(r.name)) === want);
+  /* 书评首部里的系列名可能是原名也可能是译名，两个都认 */
+  const rows = db.prepare("SELECT id, name, zh_name FROM series ORDER BY id").all() as any[];
+  const hits = rows.filter(
+    (r) => normSeries(String(r.name)) === want || (r.zh_name && normSeries(String(r.zh_name)) === want)
+  );
   if (!hits.length) return null;
   if (hits.length === 1) return Number(hits[0].id);
   if (author) {

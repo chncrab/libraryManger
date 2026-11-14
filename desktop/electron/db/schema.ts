@@ -3,7 +3,16 @@
  * 改结构一律新增一段，不要改已发布的段落。
  */
 
-export type Migration = { version: number; name: string; sql: string };
+import { rebuildAllFts } from "./fts";
+import type { DB } from "./index";
+
+export type Migration = {
+  version: number;
+  name: string;
+  sql: string;
+  /** 建表之后的补算，比如换了全文索引的列就得整库重灌一遍 */
+  after?: (db: DB) => void;
+};
 
 const V1 = `
 CREATE TABLE IF NOT EXISTS series (
@@ -173,7 +182,7 @@ UPDATE categories SET tier = 1 WHERE parent_id IS NOT NULL;
 
 /* v4 键值设置与封面替换历史。
    settings 存书评同步目录、上次备份时间这类跟随数据库走的状态，换机器一起迁走；
-   cover_history 记第一次换封面之前用的是哪张图，撤销时才能退回原图 */
+   cover_history 记第一次换封面之前用的是哪张图。这张表后来不用了，见 v9 */
 const V4 = `
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
@@ -298,6 +307,22 @@ CREATE TABLE IF NOT EXISTS cover_queue (
 );
 `;
 
+/* v8 系列名拆成原名与译名。
+   name 从这一版起只装原作语言的名称，中文译名放 zh_name。
+   显示一律用译名，没译名退回原名，见 shared/seriesText.ts 的 seriesDisplay。
+   原来那个 display_name 是建表时留下的死字段，代码里一处都没读，正好改名当译名用，
+   不必再加第三列。它的旧值是「去掉尾缀的 name」，清空之后由数据脚本按对照表录入，
+   没录的系列退回显示原名，与升级前看到的一样 */
+const V8 = `
+ALTER TABLE series RENAME COLUMN display_name TO zh_name;
+UPDATE series SET zh_name = '';
+`;
+
+/* v9 换封面不再留原图副本。
+   cover_history 记的是「换之前那张」，图不留了就没有可退的东西，
+   撤销改成直接移除封面，这张表停用并删掉 */
+const V9 = `DROP TABLE IF EXISTS cover_history;`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "init", sql: V1 },
   { version: 2, name: "category_parent", sql: V2 },
@@ -305,5 +330,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, name: "settings_and_cover_history", sql: V4 },
   { version: 5, name: "fields_and_values", sql: V5 },
   { version: 6, name: "fts_extra_column", sql: V6 },
-  { version: 7, name: "cover_cache_and_queue", sql: V7 }
+  { version: 7, name: "cover_cache_and_queue", sql: V7 },
+  /* 系列名有了译名，全文索引的 series 列要同时装两个名字，整库重灌一次 */
+  { version: 8, name: "series_zh_name", sql: V8, after: (db) => rebuildAllFts(db) },
+  { version: 9, name: "drop_cover_history", sql: V9 }
 ];

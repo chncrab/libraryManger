@@ -207,10 +207,10 @@ check("封面写进了库", !!after.cover && after.cover !== target.cover, after
 const hasImg = await js("!!document.querySelector('.drawer.on .dc')");
 check("详情里换上了新图", hasImg === true);
 
-/* 撤销要退得回原来那张，换封面那条老路没有因为走网络而变样 */
-await clickText(".dcacts .mini", "撤销");
+/* 移除封面：文件删掉，详情退回「无封面」。换封面那条老路没有因为走网络而变样 */
+await clickText(".dcacts .mini", "移除");
 await wait(1800);
-const undone = JSON.parse(
+const cleared = JSON.parse(
   String(
     (await js(`(async () => {
       const d = await window.api.getBook(${JSON.stringify(target.id)});
@@ -218,7 +218,9 @@ const undone = JSON.parse(
     })()`)) || "{}"
   )
 );
-check("撤销退回了原来那张", undone.cover === target.cover, undone.cover + " / 原 " + target.cover);
+check("移除后库里没有封面了", !cleared.cover, cleared.cover || "空");
+const emptyBox = await js("!!document.querySelector('.drawer.on .dc.empty')");
+check("详情里显示无封面", emptyBox === true);
 
 /* ---- 搜不到时回落站内搜索 ----
    假数据里查询词以「台版」开头时 suggest 给空数组，只有站内搜索页有结果，

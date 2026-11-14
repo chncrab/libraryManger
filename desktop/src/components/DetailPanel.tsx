@@ -128,16 +128,16 @@ function Body({
     flash("封面已更换");
   };
 
-  const undoCover = async () => {
+  const clearCover = async () => {
     const r = await api.resetCover(b.id);
     if (!r.ok) {
-      flash(r.msg || "没有可撤销的封面");
+      flash(r.msg || "没有可移除的封面");
       return;
     }
     const d = await api.getBook(b.id);
     if (d) onPatched(d.book);
     onSaved();
-    flash("已撤销自定义封面");
+    flash("封面已移除");
   };
 
   const usable = fields.filter((f) => !f.deletedAt && f.builtin !== 3);
@@ -166,6 +166,12 @@ function Body({
           <div className="drow2">
             {editor(f)}
             {mates.map((m) => editor(m))}
+            {/* 系列有两个名字，格子里只放得下一个，原名跟在后面小字带过 */}
+            {f.key === "series" && b.seriesOriginal && b.seriesOriginal !== b.seriesName ? (
+              <span className="dim dorig" title="系列原名">
+                （{b.seriesOriginal}）
+              </span>
+            ) : null}
           </div>
         </Row>
       );
@@ -204,14 +210,14 @@ function Body({
           <div className="dcwrap">
             {b.cover ? <img className="dc" src={coverUrl(b.cover, b.coverV)} alt="" /> : <div className="dc empty">无封面</div>}
             <div className="dcacts">
-              <button className="mini xs" onClick={changeCover} title="选一张本地图片作为封面，原图会记下来">
+              <button className="mini xs" onClick={changeCover} title="选一张本地图片作为封面，旧图会被替换掉">
                 换封面
               </button>
               <button className="mini xs" onClick={() => setFinding(true)} title="按书名或 ISBN 去豆瓣找，选一张落盘">
                 搜封面
               </button>
-              <button className="mini xs" onClick={undoCover} title="退回换之前那张">
-                撤销
+              <button className="mini xs" onClick={clearCover} title="删掉这张封面图">
+                移除
               </button>
             </div>
           </div>

@@ -50,6 +50,8 @@ function migrate(conn: DB): void {
     });
     run();
     console.log(`[db] 已执行迁移 ${m.version} ${m.name}`);
+    /* 迁移里换了索引的列，建完得按新列整库重灌一次 */
+    if (m.after) m.after(conn);
   }
   /* 新索引表建出来是空的，补一遍，否则搜索会一本都搜不到 */
   ensureFts(conn);

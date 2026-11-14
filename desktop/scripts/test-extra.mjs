@@ -72,7 +72,7 @@ const coverSrc = () => anyCover;
 console.log("\n[1] 迁移 v4");
 const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
 t("有 settings 表", tables.includes("settings"));
-t("有 cover_history 表", tables.includes("cover_history"));
+t("旧的 cover_history 表已删掉", !tables.includes("cover_history"));
 const ver = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
 t("迁移跑到最新", ver >= 6, "当前 v" + ver);
 t("有 fields 表", tables.includes("fields"));
@@ -110,7 +110,11 @@ const ser = listSeries(db, "小说");
 t("小说系列非空", ser.length > 0, ser.length + " 个");
 t("册数降序", ser.every((s, i) => i === 0 || ser[i - 1].n >= s.n));
 t("有系列带封面", ser.some((s) => !!s.cover));
-t("系列名去掉尾部系列一词", seriesLabel("冰菓シリーズ") === "冰菓" && seriesLabel("某系列") === "某", seriesLabel("冰菓シリーズ") + " / " + seriesLabel("某系列"));
+t(
+  "系列名去掉尾部系列一词",
+  seriesLabel("某某シリーズ") === "某某" && seriesLabel("某某系列") === "某某" && seriesLabel("Some Series series") === "Some Series",
+  seriesLabel("某某シリーズ") + " / " + seriesLabel("某某系列") + " / " + seriesLabel("Some Series series")
+);
 const top = ser[0];
 const booksOfTop = seriesBooks(db, top.id);
 t("系列内册数与集合一致", booksOfTop.length === top.n, top.n + " 册");
@@ -130,7 +134,8 @@ t("系列行带 display 名", !!seriesRows[0].seriesLabel, seriesRows[0].seriesL
 const serFile = rv.reviewFileName(db, { kind: "series", id: sr.id });
 t(
   "系列总评文件名叫 作者-《系列名》系列.md",
-  /^.+?-《?.+?》?系列\.md$/.test(serFile) && serFile.includes(top.label.replace(/^[《〈【]|[》〉】]$/g, "")),
+  /* 文件名跟着系列原名走，与显示用的译名分开，改译名不会连文件名一起动 */
+  /^.+?-《?.+?》?系列\.md$/.test(serFile) && serFile.includes(top.original),
   serFile
 );
 t("系列文件名以主作者打头", serFile.startsWith(seriesAuthor(db, top.id) + "-"), serFile + " / " + seriesAuthor(db, top.id));
@@ -411,30 +416,38 @@ const delO = rv.deleteOrphan(db, tmpRow.id);
 const bStill = db.prepare("SELECT deleted_at FROM reviews WHERE id = ?").get(bRow.id);
 t("删未匹配不误删同 id 的普通书评", delO.ok === true && !bStill.deleted_at);
 
-console.log("\n[8] 换封面与撤销");
+console.log("\n[8] 换封面与移除");
 const withCover = db.prepare("SELECT id, cover_file FROM books WHERE cover_file <> '' AND deleted_at IS NULL LIMIT 1").get();
 const coversDir = path.join(tmp, "covers");
 fs.mkdirSync(coversDir, { recursive: true });
-const srcCover = coverSrc(withCover.cover_file);
+const srcCover = coverSrc();
 if (fs.existsSync(srcCover)) {
   /* 先按现在的名字放一张进去，模拟库里本来就有这张封面 */
   const origName = path.basename(String(withCover.cover_file));
   fs.copyFileSync(srcCover, path.join(coversDir, origName));
   const set = setCoverFromFile(db, withCover.id, srcCover, coversDir);
   t("换封面写出的还是规范名", set.ok && !!set.cover && fs.existsSync(path.join(coversDir, set.cover)), set.cover || set.msg || "");
-  const hist = db.prepare("SELECT orig_file FROM cover_history WHERE book_id = ?").get(withCover.id);
+  /* 一本一张，换下来的旧图当场删掉，目录里不留 -原图 副本 */
   t(
-    "原图没被盖掉，另存一份",
-    !!hist && hist.orig_file !== set.cover && fs.existsSync(path.join(coversDir, hist.orig_file)),
-    hist ? hist.orig_file : "无历史"
+    "旧封面被删掉，目录里不留副本",
+    origName === set.cover || !fs.existsSync(path.join(coversDir, origName)),
+    origName
   );
-  const back = resetCover(db, withCover.id, coversDir);
+  const files = fs.readdirSync(coversDir);
+  t("没有 -原图 这种文件", !files.some((f) => f.includes("原图")), files.length + " 个文件");
+  const stem = String(set.cover || "").replace(/\.(jpg|jpeg|png|webp|gif|bmp)$/i, "");
+  t(
+    "这本书的封面只剩一张",
+    files.filter((f) => f.replace(/\.(jpg|jpeg|png|webp|gif|bmp)$/i, "") === stem).length === 1,
+    files.filter((f) => f.startsWith(stem)).join(" / ")
+  );
+  const rm = resetCover(db, withCover.id, coversDir);
   const row = db.prepare("SELECT cover_file FROM books WHERE id = ?").get(withCover.id);
-  t(
-    "撤销退回原图",
-    back.ok && row.cover_file === withCover.cover_file && fs.existsSync(path.join(coversDir, row.cover_file)),
-    row.cover_file
-  );
+  t("移除封面把 cover_file 清空", rm.ok === true && !row.cover_file, row.cover_file || "空");
+  t("移除封面把文件也删掉", !fs.existsSync(path.join(coversDir, set.cover)));
+  t("本来就没封面的再移除给提示", resetCover(db, withCover.id, coversDir).ok === false);
+  /* 收回原样，后面的用例还要这本书有封面 */
+  setCoverFromFile(db, withCover.id, srcCover, coversDir);
 } else {
   t("换封面成功", false, "找不到源封面文件 " + srcCover);
 }
@@ -483,7 +496,6 @@ if (withIdx && fs.existsSync(srcOf(withIdx))) {
   const set2 = setCoverFromFile(db, dup.id, srcOf(withIdx), coversDir);
   t("改副本封面不影响原书", set2.ok && fs.existsSync(path.join(coversDir, oldName)), oldName);
   db.prepare("DELETE FROM books WHERE id = ?").run(dup.id);
-  db.prepare("DELETE FROM cover_history WHERE book_id = ?").run(dup.id);
 
   resetCover(db, withIdx.id, coversDir);
 }

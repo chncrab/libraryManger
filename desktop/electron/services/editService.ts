@@ -17,10 +17,17 @@ function now(): string {
 }
 
 /** 找一个系列，没有就按媒介建一个。系列名空串表示脱离系列 */
+/**
+ * 系列按名字认，没有才新建。
+ * 系列有原名与译名两个名字，界面上给的是译名，所以两个都要比，
+ * 只比 name 会在每次保存时把同一个系列新建一遍。
+ */
 function resolveSeries(db: DB, name: string, mediaType: string): number | null {
   const n = name.trim();
   if (!n) return null;
-  const hit = db.prepare("SELECT id FROM series WHERE media_type = ? AND name = ?").get(mediaType, n) as any;
+  const hit = db
+    .prepare("SELECT id FROM series WHERE media_type = ? AND (name = ? OR zh_name = ?) ORDER BY (name = ?) DESC")
+    .get(mediaType, n, n, n) as any;
   if (hit) return hit.id;
   const info = db.prepare("INSERT INTO series (media_type, name) VALUES (?, ?)").run(mediaType, n);
   return Number(info.lastInsertRowid);

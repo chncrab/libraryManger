@@ -43,7 +43,7 @@ electron/
   services/seriesService   系列聚合、册序、系列作者
   services/reviewService   书评清单、命名、改绑
   services/reviewIo.ts     书评 Markdown 读写、映射、双向同步
-  services/coverService    封面命名、替换、撤销、改名
+  services/coverService    封面命名、替换、移除、改名
   services/backupService   库备份
   services/settingsService 设置项
 shared/types.ts         主进程与界面共用的类型
