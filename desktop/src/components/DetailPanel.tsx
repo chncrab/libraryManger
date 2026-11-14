@@ -4,6 +4,7 @@ import type { BookPatch, BookRow, CatNode, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
 import { FieldEditor, patchOf, valuesOf } from "./FieldRenderer";
 import CoverSearch from "./CoverSearch";
+import Confirm from "./Confirm";
 
 interface Props {
   id: string | null;
@@ -83,6 +84,7 @@ function Body({
   const [cats, setCats] = useState<CatNode[]>([]);
   const [msg, setMsg] = useState("");
   const [finding, setFinding] = useState(false);
+  const [askCover, setAskCover] = useState(false);
   const msgTimer = useRef<number>(0);
 
   useEffect(() => {
@@ -128,7 +130,9 @@ function Body({
     flash("封面已更换");
   };
 
+  /* 删封面会把图片一起删掉，跟删书一样先问一句 */
   const clearCover = async () => {
+    setAskCover(false);
     const r = await api.resetCover(b.id);
     if (!r.ok) {
       flash(r.msg || "没有可移除的封面");
@@ -216,7 +220,7 @@ function Body({
               <button className="mini xs" onClick={() => setFinding(true)} title="按书名或 ISBN 去豆瓣找，选一张落盘">
                 搜封面
               </button>
-              <button className="mini xs" onClick={clearCover} title="删掉这张封面图">
+              <button className="mini xs" onClick={() => setAskCover(true)} title="删掉这张封面图">
                 移除
               </button>
             </div>
@@ -256,6 +260,15 @@ function Body({
             const extra = r.filled && r.filled.length ? "，补了" + r.filled.join("、") : "";
             flash("封面已换上" + extra);
           }}
+        />
+      ) : null}
+
+      {askCover ? (
+        <Confirm
+          text="移除这张封面？封面图片会一起删掉。"
+          okText="移除"
+          onOk={clearCover}
+          onCancel={() => setAskCover(false)}
         />
       ) : null}
     </div>
