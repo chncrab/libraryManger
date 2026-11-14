@@ -72,7 +72,6 @@ for (const r of rows) {
     continue;
   }
   db.prepare("UPDATE books SET cover_file = ? WHERE id = ?").run(want, r.id);
-  db.prepare("UPDATE cover_history SET orig_file = ? WHERE book_id = ? AND orig_file = ?").run(want, r.id, r.f);
   renamed++;
 }
 

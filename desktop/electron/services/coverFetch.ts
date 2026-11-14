@@ -616,7 +616,7 @@ export interface ApplyOptions {
 }
 
 /**
- * 落盘：下大图 → 交给 setCoverFromFile（命名、原图移位、撤销历史全复用，不另写一套）。
+ * 落盘：下大图 → 交给 setCoverFromFile（命名与旧图清理全复用，不另写一套）。
  * 临时文件用完就删，不管成败。
  */
 export async function applyCandidate(

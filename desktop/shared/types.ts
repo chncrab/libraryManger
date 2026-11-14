@@ -117,7 +117,10 @@ export interface BookRow {
   originalSubtitle: string;
   mediaType: string;
   seriesId: number | null;
+  /** 所属系列显示用的名字，译名优先，没有译名才是原名 */
   seriesName: string;
+  /** 所属系列的原名，与 seriesName 相同就不必另说 */
+  seriesOriginal: string;
   seriesIndex: number | null;
   country: string;
   isMystery: boolean;
@@ -216,9 +219,14 @@ export interface SeriesAvg {
 /** 系列集合视图的一格 */
 export interface SeriesInfo {
   id: number;
+  /** 系列原名，原作语言的写法，也是系列的身份 */
   name: string;
-  /** 去掉尾部「系列 / シリーズ」的显示名 */
+  /** 中文译名，没录就是空串 */
+  zhName: string;
+  /** 去掉尾部「系列 / シリーズ / series」的显示名，译名优先 */
   label: string;
+  /** 去掉尾部尾缀的原名，与 label 相同就不必显示副行 */
+  original: string;
   mediaType: string;
   n: number;
   read: number;
@@ -486,7 +494,7 @@ export interface BooklibApi {
   /** 把系列总评搬回单本 */
   moveReviewToBook(kind: string, id: number, bookId: string): Promise<RvResult>;
 
-  /** 换封面与撤销，走主进程的文件对话框 */
+  /** 换封面与移除封面，走主进程的文件对话框 */
   pickCover(bookId: string): Promise<{ ok: boolean; cover?: string; msg?: string }>;
   resetCover(bookId: string): Promise<{ ok: boolean; cover?: string; msg?: string }>;
 

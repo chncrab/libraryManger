@@ -1,5 +1,6 @@
 import type { DB } from "../db";
 import type { BookQuery, BookRow, ListResult, Facets, SortSpec } from "../../shared/types";
+import { seriesDisplay } from "../../shared/seriesText";
 import { customOfBooks } from "./fieldService";
 
 /* 多字段排序：每个 key 对应一个可比较的表达式，方向另加。
@@ -8,7 +9,7 @@ const ORDER_COL: Record<string, string> = {
   title: "b.title COLLATE NOCASE",
   author:
     "(SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id WHERE ba.book_id = b.id ORDER BY ba.ord LIMIT 1) COLLATE NOCASE",
-  series: "COALESCE(s.name, '') COLLATE NOCASE",
+  series: "COALESCE(NULLIF(s.zh_name, ''), s.name, '') COLLATE NOCASE",
   index: "b.series_index",
   rating: "b.rating",
   read: "b.read_date",
@@ -51,7 +52,7 @@ const SELECT_ROW = `
 SELECT b.id, b.title, b.subtitle, b.original_title, b.original_subtitle, b.media_type,
        b.series_id, b.series_index, b.country, b.is_mystery, b.publish_date, b.publish_year,
        b.is_read, b.read_date, b.rating, b.ebook_state, b.note, b.cover_file, b.updated_at,
-       s.name AS series_name,
+       s.name AS series_name, s.zh_name AS series_zh,
        (SELECT group_concat(a.name, '、') FROM book_authors ba JOIN authors a ON a.id = ba.author_id
           WHERE ba.book_id = b.id) AS authors_text,
        (SELECT group_concat(c.name, '、') FROM book_categories bc JOIN categories c ON c.id = bc.category_id
@@ -74,7 +75,8 @@ function toRow(r: any): BookRow {
     originalSubtitle: r.original_subtitle,
     mediaType: r.media_type,
     seriesId: r.series_id,
-    seriesName: r.series_name || "",
+    seriesName: r.series_name ? seriesDisplay(r.series_zh, r.series_name) : "",
+    seriesOriginal: r.series_name || "",
     seriesIndex: r.series_index,
     country: r.country,
     isMystery: !!r.is_mystery,
@@ -300,7 +302,7 @@ export function facets(db: DB, media = ""): Facets {
          FROM categories c ORDER BY c.ord, c.name`
     ),
     series: all(
-      `SELECT s.id, s.name, s.media_type AS mediaType, COUNT(*) AS n
+      `SELECT s.id, COALESCE(NULLIF(s.zh_name, ''), s.name) AS name, s.media_type AS mediaType, COUNT(*) AS n
          FROM series s JOIN books b ON b.series_id = s.id AND ${scope}
         GROUP BY s.id ORDER BY n DESC`
     ),

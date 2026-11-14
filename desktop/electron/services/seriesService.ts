@@ -1,29 +1,20 @@
 import type { DB } from "../db";
 import type { BookRow, SeriesInfo } from "../../shared/types";
 import { listBooks } from "./bookService";
+import { seriesDisplay, seriesLabel, seriesTitle } from "../../shared/seriesText";
 
-/** 系列名里尾部的「系列 / シリーズ」是资料里带的分类词，界面上不显示 */
-export function seriesLabel(name: string): string {
-  return String(name || "")
-    .replace(/\s*(シリーズ|系列)\s*$/i, "")
-    .trim() || String(name || "");
-}
-
-/** 系列名本身可能已经带书名号，外面就不要再套一层《》 */
-export function seriesTitle(name: string): string {
-  const s = seriesLabel(name);
-  return /^[《〈【]/.test(s) ? s : "《" + s + "》";
-}
+export { seriesLabel, seriesTitle };
 
 /**
  * 系列集合一格格的数据。册数与均分只算在架书，均分只算读过且打过分的那几册。
  * 封面取系列里册序最靠前、且有封面的一本。
+ * label 是给人看的名字，译名优先；original 是原作语言的名，与 label 相同就不必显示。
  */
 export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
   const on = !!mediaType && mediaType !== "全部";
   const rows = db
     .prepare(
-      `SELECT s.id, s.name, s.media_type AS mediaType,
+      `SELECT s.id, s.name, s.zh_name, s.media_type AS mediaType,
               COUNT(b.id) AS n,
               SUM(CASE WHEN b.is_read = 1 THEN 1 ELSE 0 END) AS read,
               AVG(CASE WHEN b.is_read = 1 AND b.rating > 0 THEN b.rating END) AS avg,
@@ -32,7 +23,7 @@ export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
          JOIN books b ON b.series_id = s.id AND b.deleted_at IS NULL
         ${on ? "WHERE s.media_type = ?" : ""}
         GROUP BY s.id
-        ORDER BY n DESC, s.name`
+        ORDER BY n DESC`
     )
     .all(...(on ? [mediaType] : [])) as any[];
 
@@ -47,18 +38,22 @@ export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
   const coverOf = new Map<number, any>();
   for (const c of covers) if (!coverOf.has(c.sid)) coverOf.set(c.sid, c);
 
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    label: seriesLabel(r.name),
-    mediaType: r.mediaType,
-    n: r.n,
-    read: r.read || 0,
-    avg: r.avg == null ? null : Number(r.avg),
-    cover: coverOf.get(r.id)?.file || "",
-    coverV: coverOf.get(r.id)?.upd || "",
-    updatedAt: r.updatedAt || ""
-  }));
+  return rows
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      zhName: r.zh_name || "",
+      label: seriesLabel(seriesDisplay(r.zh_name, r.name)),
+      original: seriesLabel(r.name),
+      mediaType: r.mediaType,
+      n: r.n,
+      read: r.read || 0,
+      avg: r.avg == null ? null : Number(r.avg),
+      cover: coverOf.get(r.id)?.file || "",
+      coverV: coverOf.get(r.id)?.upd || "",
+      updatedAt: r.updatedAt || ""
+    }))
+    .sort((a, b) => b.n - a.n || a.label.localeCompare(b.label, "zh"));
 }
 
 /** 系列内的书按册序排，方便弹层里从上到下看 */

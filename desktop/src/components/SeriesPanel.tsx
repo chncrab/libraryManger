@@ -38,7 +38,15 @@ export default function SeriesPanel({ series, onClose, onOpenBook, onWriteReview
       <aside className="drawer on" aria-label="系列">
         <div className="dwrap">
           <div className="dh">
-            <h2>{series.label}</h2>
+            <h2>
+              {series.label}
+              {series.original && series.original !== series.label ? (
+                <span className="dim dorig" title="系列原名">
+                  {" "}
+                  {series.original}
+                </span>
+              ) : null}
+            </h2>
             <span className="dim">
               {series.n} 册 · 已读 {series.read}
               {series.avg != null ? " · ★ " + series.avg.toFixed(1) : ""}

@@ -527,7 +527,9 @@ export default function App() {
   /* 系列模式下按名字搜、按册数或均分排，都在内存里做，系列总共一百多个 */
   const shownSeries = useMemo(() => {
     const k = qNow.toLowerCase();
-    const out = seriesList.filter((s) => !k || s.label.toLowerCase().includes(k) || s.name.toLowerCase().includes(k));
+    const out = seriesList.filter(
+      (s) => !k || s.label.toLowerCase().includes(k) || s.name.toLowerCase().includes(k) || s.original.toLowerCase().includes(k)
+    );
     const cmp: Record<SerSort, (a: SeriesInfo, b: SeriesInfo) => number> = {
       n: (a, b) => b.n - a.n || a.label.localeCompare(b.label, "zh"),
       name: (a, b) => a.label.localeCompare(b.label, "zh"),
