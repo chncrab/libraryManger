@@ -388,6 +388,7 @@ function fakeHttp(): Http {
   const subjectHtml = (id: string, title: string) => `<!doctype html><html><head>
 <meta property="og:title" content="${title}" />
 <meta property="og:image" content="https://img3.doubanio.com/view/subject/l/public/${id}.jpg" />
+<meta property="og:url" content="https://book.douban.com/subject/${id}/" />
 </head><body><h1 class="title"><span property="v:itemreviewed">${title}</span></h1>
 <div id="info">
 <span class="pl"> 作者</span>: 某作者<br/>
@@ -477,6 +478,16 @@ const httpImpl = (): Http => (process.env.BOOKLIB_FAKE_COVER === "1" ? fakeHttp(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * 撞上豆瓣拦截时给界面与批量用的一句话。软限流是它把「搜索访问太频繁」
+ * 写进 200 的响应体里，与 403、418 那种硬挡不同，提示要分得开，
+ * 不然用户以为是书不存在或者软件坏了。
+ */
+function blockMsg(e: BlockedError): string {
+  if (e.soft) return "豆瓣限制了搜索频率（" + e.detail + "），过一会儿再试，或者直接把 ISBN 粘进来";
+  return "豆瓣拦了一下（" + e.code + "），过一会儿再试";
+}
+
+/**
  * 批量跑一遍缺封面的书。串行，每本之间停一会儿，撞上限速就整批停，
  * 剩下的一本不动、留在库里等下次。已经排进队列的也算处理过，不会重复弹。
  */
@@ -531,7 +542,7 @@ async function runCoverBatch(backfill: boolean): Promise<void> {
       if (e instanceof BlockedError) {
         batchState = {
           ...batchState,
-          stopReason: "豆瓣拦了一下（" + e.code + "），剩下的没动",
+          stopReason: blockMsg(e) + "，剩下的没动",
           failed: batchState.failed + 1,
           done: batchState.done + 1
         };
@@ -814,7 +825,7 @@ function registerIpc(): void {
       const r = await coverSearch(D(), http, String(q || ""));
       return { ok: true, candidates: r.list, cached: r.cached };
     } catch (e) {
-      if (e instanceof BlockedError) return { ok: false, candidates: [], msg: "豆瓣拦了一下（" + e.code + "），过一会儿再试" };
+      if (e instanceof BlockedError) return { ok: false, candidates: [], msg: blockMsg(e) };
       return { ok: false, candidates: [], msg: e instanceof Error ? e.message : String(e) };
     }
   });

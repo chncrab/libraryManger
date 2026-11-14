@@ -38,14 +38,14 @@ export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
 
   const covers = db
     .prepare(
-      `SELECT series_id AS sid, cover_file AS file
+      `SELECT series_id AS sid, cover_file AS file, updated_at AS upd
          FROM books
         WHERE series_id IS NOT NULL AND deleted_at IS NULL AND cover_file <> ''
         ORDER BY series_index IS NULL, series_index, title`
     )
     .all() as any[];
-  const coverOf = new Map<number, string>();
-  for (const c of covers) if (!coverOf.has(c.sid)) coverOf.set(c.sid, c.file);
+  const coverOf = new Map<number, any>();
+  for (const c of covers) if (!coverOf.has(c.sid)) coverOf.set(c.sid, c);
 
   return rows.map((r) => ({
     id: r.id,
@@ -55,7 +55,8 @@ export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
     n: r.n,
     read: r.read || 0,
     avg: r.avg == null ? null : Number(r.avg),
-    cover: coverOf.get(r.id) || "",
+    cover: coverOf.get(r.id)?.file || "",
+    coverV: coverOf.get(r.id)?.upd || "",
     updatedAt: r.updatedAt || ""
   }));
 }

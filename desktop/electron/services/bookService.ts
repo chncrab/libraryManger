@@ -86,6 +86,7 @@ function toRow(r: any): BookRow {
     ebookState: r.ebook_state,
     note: r.note,
     cover: r.cover_file || "",
+    coverV: r.updated_at || "",
     authors: splitList(r.authors_text),
     categories: splitList(r.cats_text),
     states: splitList(r.states_text),

@@ -202,7 +202,7 @@ function Body({
       <div className="db">
         <div className="dtop">
           <div className="dcwrap">
-            {b.cover ? <img className="dc" src={coverUrl(b.cover)} alt="" /> : <div className="dc empty">无封面</div>}
+            {b.cover ? <img className="dc" src={coverUrl(b.cover, b.coverV)} alt="" /> : <div className="dc empty">无封面</div>}
             <div className="dcacts">
               <button className="mini xs" onClick={changeCover} title="选一张本地图片作为封面，原图会记下来">
                 换封面
