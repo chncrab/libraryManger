@@ -55,6 +55,7 @@ const pngBytes = (() => {
 const SUBJECT_HTML = `<!doctype html><html><head>
 <meta property="og:title" content="测试之书" />
 <meta property="og:image" content="https://img3.doubanio.com/view/subject/l/public/s111.jpg" />
+<meta property="og:url" content="https://book.douban.com/subject/777/" />
 </head><body><div id="info">
 <span class="pl"> 作者</span>: <a>某作者</a><br/>
 <span class="pl">出版社:</span> <a>某某出版社</a><br/>
@@ -63,6 +64,9 @@ const SUBJECT_HTML = `<!doctype html><html><head>
 <span class="pl">页数:</span> 320<br/>
 <span class="pl">装帧:</span> 精装<br/>
 </div></body></html>`;
+
+/* 日版与台版条目写的是「出版时间」，简体才写「出版年」，两种都得读得出来 */
+const SUBJECT_TIME_HTML = SUBJECT_HTML.replace("出版年", "出版时间");
 
 const SUGGEST = JSON.stringify([
   {
@@ -111,6 +115,14 @@ function siteFor(q) {
   return SITE_HTML.replace(/測試之書/g, q.replace(/[<>&"]/g, ""));
 }
 
+/* 被限流时豆瓣照样回 200，结果空着，话写在 error_info 里 */
+const SITE_BLOCKED_HTML = `<html><head><script>var x = {a:1};</script></head><body>
+<script>
+window.__DATA__ = {"total": 0, "start": 0, "count": 15, "error_info": "搜索访问太频繁。", "items": [], "text": "測試之書"};
+</script>
+<script>var y = {"z":1};</script>
+</body></html>`;
+
 /** 按查询词现造一批。批量那组要的是「搜什么就有什么」，好验满分与阈值 */
 function suggestFor(q) {
   return JSON.stringify([
@@ -135,7 +147,12 @@ function suggestFor(q) {
   ]);
 }
 
-/** 替身。每个方法都记次数，用来验缓存到底有没有挡住第二次请求 */
+/**
+ * 替身。每个方法都记次数，用来验缓存到底有没有挡住第二次请求。
+ * 跳转与详情页的 url 一律给空串，照 Electron 的 net.fetch 来：
+ * 它跟随重定向之后 Response.url 就是空的，早先替身给了真地址，
+ * 把「按 r.url 取条目号」这个错遮住了，整条 ISBN 路对外一直不通。
+ */
 function stub(over = {}) {
   const calls = { text: [], bytes: [], headers: [] };
   const http = {
@@ -149,13 +166,13 @@ function stub(over = {}) {
         const q = decodeURIComponent((url.split("q=")[1] || "").split("&")[0]);
         return { status: 200, url, text: suggestFor(q) };
       }
-      if (url.includes("/isbn/")) return { status: 200, url: "https://book.douban.com/subject/777/", text: SUBJECT_HTML };
+      if (url.includes("/isbn/")) return { status: 200, url: "", text: SUBJECT_HTML };
       if (url.includes("/subject_search")) {
         const q = decodeURIComponent((url.split("search_text=")[1] || "").split("&")[0]);
         return { status: 200, url, text: siteFor(q) };
       }
       const m = url.match(/subject\/(\d+)/);
-      return { status: 200, url, text: m ? SUBJECT_HTML : "" };
+      return { status: 200, url: "", text: m ? SUBJECT_HTML : "" };
     },
     async bytes(url, headers) {
       calls.bytes.push(url);
@@ -195,6 +212,19 @@ console.log("\n[1] 解析");
   t("坏 JSON 不炸", cf.parseSuggest("{不是数组").length === 0);
   t("不是数组也不炸", cf.parseSuggest('{"a":1}').length === 0);
 
+  /* 限流的识别。状态码 200 与「真没有」长得一模一样，只有 error_info 分得开 */
+  t("认得出限流那句话", cf.searchPageError(SITE_BLOCKED_HTML) === "搜索访问太频繁。", cf.searchPageError(SITE_BLOCKED_HTML));
+  t("正常页没有报错", cf.searchPageError(SITE_HTML) === "");
+  t("没有 __DATA__ 也不算报错", cf.searchPageError("<html>啥也没有</html>") === "");
+
+  /* 条目号从正文认。net.fetch 跳转后 Response.url 是空串，页里的 og:url 才靠得住 */
+  t("从 og:url 认条目号", cf.subjectIdOf(SUBJECT_HTML) === "777", cf.subjectIdOf(SUBJECT_HTML));
+  t(
+    "没有 og:url 就退正文链接",
+    cf.subjectIdOf('<html><a href="https://book.douban.com/subject/4321/">书</a></html>') === "4321"
+  );
+  t("都认不出给空串", cf.subjectIdOf("<html>没有链接</html>") === "");
+
   const s = cf.parseSubject(SUBJECT_HTML, "777");
   t("取到大图", s.image.endsWith("s111.jpg"));
   t("取到书名", s.title === "测试之书", s.title);
@@ -202,6 +232,8 @@ console.log("\n[1] 解析");
   t("取到出版年", s.year === "2019-5-1", s.year);
   t("取到 ISBN 与页数", s.info["ISBN"] === "9787000000001" && s.info["页数"] === "320");
   t("取到装帧", s.info["装帧"] === "精装");
+  /* 日版与台版条目的键是出版时间，简体才写出版年 */
+  t("出版时间也读得出年份", cf.parseSubject(SUBJECT_TIME_HTML, "777").year === "2019-5-1", cf.parseSubject(SUBJECT_TIME_HTML, "777").year);
 
   /* 信息区的切点必须落在开标签之后。曾从 id="info" 本身切，
      把 <div 前缀留在正文里，第一段成了 id="info"> 作者 : xxx，
@@ -230,7 +262,14 @@ console.log("\n[2] 书名归一化与 ISBN 判断");
   t("前缀与横杠一起来也认", cf.normIsbn("ISBN 978-7-0000-0000-1") === "9787000000001");
   t("全角数字也认", cf.normIsbn("９７８７００００００００１") === "9787000000001");
   t("十位带 X 也认", cf.normIsbn("730100000X") === "730100000X");
+  /* 从网页复制常带零宽字符与不间断空格，肉眼看不出来 */
+  t("零宽字符也认", cf.normIsbn("isbn\u200B9787000000001") === "9787000000001");
+  t("不间断空格也认", cf.normIsbn("9787\u00A00000\u00A000001") === "9787000000001");
   t("不是号给空串", cf.normIsbn("測試之書") === "");
+
+  /* 直接把豆瓣条目链接粘进来也行 */
+  t("从链接认条目号", cf.subjectIdFromUrl("https://book.douban.com/subject/25900682/") === "25900682");
+  t("链接没有号和 ISBN 时给空串", cf.subjectIdFromUrl("測試之書") === "");
 }
 
 console.log("\n[3] 打分");
@@ -261,7 +300,8 @@ console.log("\n[4] 搜索与缓存");
   const { http: h3, calls: c3 } = stub();
   const r3 = await cf.search(db, h3, "9787000000001");
   t("ISBN 走跳转那条", c3.text[0].includes("/isbn/"), c3.text[0].slice(0, 48));
-  t("ISBN 拿到一条", r3.list.length === 1 && r3.list[0].id === "777");
+  /* 替身按 net.fetch 的真实脾气不给 url，条目号只能从正文认，认不出就整条路空 */
+  t("跳转不给地址也认得出条目", r3.list.length === 1 && r3.list[0].id === "777", "条数 " + r3.list.length);
 
   /* 把缓存做成二十五小时前，下一次必须重新请求 */
   db.prepare("UPDATE cover_cache SET fetched_at = ? WHERE kind = 'search'").run(new Date(Date.now() - 25 * 3600 * 1000).toISOString());
@@ -289,6 +329,38 @@ console.log("\n[4] 搜索与缓存");
   const r7 = await cf.search(db, h7, "9787000000002");
   t("ISBN 跳转失败会兜一层站内搜索", c7.text.some((u) => u.includes("/subject_search")));
   t("兜回来有结果", r7.list.length > 0, "条数 " + r7.list.length);
+
+  /* 粘的是豆瓣条目链接，不必再搜，直接按号取那一条 */
+  const { http: h8, calls: c8 } = stub();
+  const r8 = await cf.search(db, h8, "  https://book.douban.com/subject/25900682/  ");
+  t("粘条目链接直接取那一条", r8.list.length === 1 && c8.text[0].includes("/subject/25900682/"), c8.text[0].slice(0, 56));
+
+  /* 限流写在 200 的正文里，要当成拦截抛上去，不能当成没搜到 */
+  const { http: h9 } = stub({
+    text: (u) =>
+      u.includes("/j/subject_suggest")
+        ? { status: 200, url: u, text: "[]" }
+        : u.includes("/subject_search")
+          ? { status: 200, url: "", text: SITE_BLOCKED_HTML }
+          : null
+  });
+  let softErr = null;
+  try {
+    await cf.search(db, h9, "一本站内也搜不到的书");
+  } catch (e) {
+    softErr = e;
+  }
+  t("限流被认出来并抛上去", softErr instanceof cf.BlockedError, softErr ? softErr.message : "没抛");
+  t("软限流标了 soft 并带上原话", !!softErr && softErr.soft === true && softErr.detail === "搜索访问太频繁。");
+
+  const { http: h10 } = stub({ text: () => ({ status: 429, url: "", text: "" }) });
+  let hardErr = null;
+  try {
+    await cf.search(db, h10, "又一本搜不到的书");
+  } catch (e) {
+    hardErr = e;
+  }
+  t("状态码 429 算硬拦，不带 soft", hardErr instanceof cf.BlockedError && hardErr.soft === false, hardErr ? String(hardErr.code) : "没抛");
 }
 
 console.log("\n[5] 详情与缩略图");

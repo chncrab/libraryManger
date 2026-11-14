@@ -56,7 +56,7 @@ npm run dev -- --soft
 - 书评库。单本、系列、草稿、未匹配四档，可改绑到别的书或系列，改绑即改名。
 - 书评标签。每篇 Markdown 开头带一块标签区，记阅读时间、评分、书籍或系列、分类。时间、评分与分类由库单向写出，书籍与系列以文件为准，导入时按标签认书。现有书评可一次性补齐，也能撤销。
 - 封面。自定义图替换与撤销，原图留档。走 `cover://` 协议读本地文件，不进数据库。
-- 找封面。按书名、作者或 ISBN 去豆瓣搜，候选铺成网格选一张；缺封面的书可批量跑，打分不到阈值的进队列逐条过目，顺带补书目为可选项，只填空字段。
+- 找封面。按书名、作者、ISBN 或豆瓣条目链接去搜，候选铺成网格选一张；缺封面的书可批量跑，打分不到阈值的进队列逐条过目，顺带补书目为可选项，只填空字段。豆瓣限制搜索频率时如实提示并停批，不当成没有结果。
 - 备份。整库复制到别处，带封面与书评，不带历史备份目录。
 - 回收站。删除进回收站，可还原。
 
@@ -89,7 +89,7 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-edit
 # 服务层，144 条
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-extra.mjs
 
-# 服务层，封面的 91 条，全程替身响应不走网络
+# 服务层，封面的 106 条，全程替身响应不走网络
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/test-cover.mjs
 
 # 交互冒烟，52 条，需先起应用并带 --remote-debugging-port=9334

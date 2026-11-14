@@ -129,6 +129,8 @@ export interface BookRow {
   ebookState: string;
   note: string;
   cover: string;
+  /** 封面版本，取 books.updated_at。换封面后文件名多半不变，界面靠它换地址把旧图顶掉 */
+  coverV: string;
   authors: string[];
   categories: string[];
   states: string[];
@@ -222,6 +224,8 @@ export interface SeriesInfo {
   read: number;
   avg: number | null;
   cover: string;
+  /** 封面版本，取那张封面所属书的 updated_at，道理同 BookRow.coverV */
+  coverV: string;
   updatedAt: string;
 }
 

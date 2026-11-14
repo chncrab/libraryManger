@@ -35,7 +35,7 @@ export default function CoverSearch({ bookId, bookTitle, bookAuthors, onApplied,
       const r = await api.searchCovers(s);
       setList(r.candidates || []);
       setCached(!!r.cached);
-      setMsg(r.ok ? (r.candidates.length ? "" : "没搜到。台版书用繁体的原名更容易中，也可以直接填 ISBN") : r.msg || "搜不到");
+      setMsg(r.ok ? (r.candidates.length ? "" : "没搜到。台版书用繁体的原名更容易中，也可以直接填 ISBN 或粘条目链接") : r.msg || "搜不到");
       setThumbs({});
     } finally {
       setBusy(false);
@@ -107,7 +107,7 @@ export default function CoverSearch({ bookId, bookTitle, bookAuthors, onApplied,
         <div className="csrch-q">
           <input
             autoFocus
-            placeholder="书名、作者，或者 ISBN（连 isbn 三个字母一起粘也行）"
+            placeholder="书名、作者、ISBN，或者豆瓣条目链接"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {

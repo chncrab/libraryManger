@@ -44,9 +44,10 @@ export interface Http {
   bytes(url: string, headers?: Record<string, string>): Promise<BytesResponse>;
 }
 
+/** soft 为真表示豆瓣没给错误状态码，只是拿搜索频率说事，等等就好 */
 export class BlockedError extends Error {
-  constructor(public code: number) {
-    super("豆瓣返回 " + code + "，先停下来");
+  constructor(public code: number, public detail = "", public soft = false) {
+    super(detail || "豆瓣返回 " + code + "，先停下来");
   }
 }
 
@@ -201,6 +202,27 @@ function dataOf(html: string): any | null {
 }
 
 /**
+ * 站内搜索被限流时豆瓣照样回 200，错写在 window.__DATA__ 的 error_info 里。
+ * 不读这段就分不出「真没有」与「被拦下」，界面只能一律说没搜到。
+ */
+export function searchPageError(html: string): string {
+  const d = dataOf(html);
+  return String(d?.error_info || "").trim();
+}
+
+/**
+ * 从详情页正文里认条目号。net.fetch 跟随重定向后 Response.url 是空串，
+ * 靠它拿不到号，页面里的 og:url 才可靠，缺了再从正文链接里找一个。
+ */
+export function subjectIdOf(html: string): string {
+  const tag = html.match(/<meta[^>]+og:url[^>]*>/i);
+  const fromOg = tag ? (tag[0].match(/subject\/(\d+)/) || [])[1] || "" : "";
+  if (fromOg) return fromOg;
+  const any = html.match(/book\.douban\.com\/subject\/(\d+)\//i);
+  return any ? any[1] : "";
+}
+
+/**
  * 解析站内搜索页。豆瓣的 suggest 索引对台版与繁体书名覆盖很差，
  * 搜一本台版书的繁体原名给空数组，可站内搜索里明明有十几条，这条路就是补这个洞的。
  * abstract 的定式是「作者 / 译者 / 绘者 / 出版社 / 日期 / 价格」，
@@ -281,7 +303,8 @@ export function parseSubject(html: string, id = ""): Subject {
     id,
     title,
     authors: info["作者"] || "",
-    year: info["出版年"] || "",
+    /* 简体条目写「出版年」，日版与台版写「出版时间」，两种都得认 */
+    year: info["出版年"] || info["出版时间"] || "",
     publisher: info["出版社"] || "",
     image,
     info
@@ -296,11 +319,19 @@ export function normIsbn(q: string): string {
   const s = String(q || "")
     /* 全角转半角，连 ＩＳＢＮ 与全角数字一起处理 */
     .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    /* 从网页复制常带零宽字符与不间断空格，肉眼看不见，不剥掉会认不出号 */
+    .replace(/[\u200B-\u200D\uFEFF\u00A0\u3000]/g, "")
     .replace(/isbn/gi, "")
     .replace(/[-\s:：·]/g, "");
   if (/^\d{13}$/.test(s)) return s;
   if (/^\d{9}[\dX]$/i.test(s)) return s.toUpperCase();
   return "";
+}
+
+/** 粘的是豆瓣条目链接时把号拆出来，省得让人再去找 ISBN */
+export function subjectIdFromUrl(q: string): string {
+  const m = String(q || "").match(/book\.douban\.com\/subject\/(\d+)/i);
+  return m ? m[1] : "";
 }
 
 /** 十三位数字当 ISBN，带横杠、带 isbn 前缀的也认。其余当关键词 */
@@ -341,6 +372,9 @@ async function rawSite(http: Http, kw: string): Promise<CoverCandidate[]> {
   const r = await http.text(url, HEADERS);
   if (BLOCK_CODES.has(r.status)) throw new BlockedError(r.status);
   if (r.status !== 200) return [];
+  /* 限流时状态码是 200，结果里空着，只有 error_info 说了实话 */
+  const err = searchPageError(r.text);
+  if (err) throw new BlockedError(429, err, true);
   return parseSearchPage(r.text);
 }
 
@@ -355,13 +389,16 @@ async function rawKeyword(http: Http, kw: string): Promise<CoverCandidate[]> {
   return rawSite(http, kw);
 }
 
-async function rawIsbn(http: Http, isbn: string): Promise<CoverCandidate | null> {
-  const clean = isbn.replace(/[-\s]/g, "");
-  /* 搜接口把 ISBN 当关键词会返回空数组，必须走这条跳转 */
-  const r = await http.text("https://book.douban.com/isbn/" + clean + "/", HEADERS);
+/**
+ * 详情页拼一条候选。ISBN 跳转与直接粘条目链接都走这里，差别只在请求哪个地址。
+ * 落点上的号只能从正文认。net.fetch 跟随重定向后 Response.url 是空串，
+ * 早先按 r.url 取号，整条 ISBN 路一直返回空，等于没通。
+ */
+async function fromSubjectPage(http: Http, url: string): Promise<CoverCandidate | null> {
+  const r = await http.text(url, HEADERS);
   if (BLOCK_CODES.has(r.status)) throw new BlockedError(r.status);
-  const id = (r.url.match(/subject\/(\d+)/) || [])[1] || "";
-  if (r.status !== 200 || !id) return null;
+  if (r.status !== 200) return null;
+  const id = subjectIdOf(r.text);
   const s = parseSubject(r.text, id);
   if (!s.title && !s.image) return null;
   return {
@@ -376,6 +413,11 @@ async function rawIsbn(http: Http, isbn: string): Promise<CoverCandidate | null>
   };
 }
 
+const rawIsbn = (http: Http, isbn: string) =>
+  fromSubjectPage(http, "https://book.douban.com/isbn/" + isbn.replace(/[-\s]/g, "") + "/");
+
+const rawSubject = (http: Http, id: string) => fromSubjectPage(http, "https://book.douban.com/subject/" + id + "/");
+
 /** 关键词搜。结果缓存一份，手动搜与批量共用 */
 export async function searchKeyword(db: DB, http: Http, kw: string): Promise<{ list: CoverCandidate[]; cached: boolean }> {
   const q = String(kw || "").trim();
@@ -387,10 +429,24 @@ export async function searchKeyword(db: DB, http: Http, kw: string): Promise<{ l
   return { list, cached: false };
 }
 
-/** 一次搜索把三条路都试过：ISBN 走跳转，关键词走 suggest，都空了走站内搜索 */
+/** 一次搜索把三条路都试过：条目链接直取，ISBN 走跳转，关键词走 suggest，都空了走站内搜索 */
 export async function search(db: DB, http: Http, q: string): Promise<{ list: CoverCandidate[]; cached: boolean }> {
   const raw = String(q || "").trim();
   if (!raw) return { list: [], cached: false };
+
+  /* 粘的是条目链接时不必再搜，直接按号取那一条 */
+  const byUrl = subjectIdFromUrl(raw);
+  if (byUrl) {
+    const hit = cacheGet(db, "subject", byUrl);
+    if (hit) return { list: hit as CoverCandidate[], cached: true };
+    const one = await rawSubject(http, byUrl);
+    if (one) {
+      const list = [one];
+      cacheSet(db, "subject", byUrl, list);
+      return { list, cached: false };
+    }
+    return { list: [], cached: false };
+  }
 
   const isbn = normIsbn(raw);
   if (isbn) {
@@ -509,7 +565,7 @@ export function backfill(
   const custom: Record<string, string[]> = {};
 
   /* 出版年落进原有的出版日期列，它是内建字段，不必再建一个自定义的 */
-  const year = String(detail.info["出版年"] || "").trim();
+  const year = String(detail.info["出版年"] || detail.info["出版时间"] || "").trim();
   let publishDate: string | undefined;
   if (year) {
     const m = year.match(/(\d{4})(?:[-/.](\d{1,2}))?(?:[-/.](\d{1,2}))?/);
