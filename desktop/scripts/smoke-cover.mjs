@@ -207,8 +207,12 @@ check("封面写进了库", !!after.cover && after.cover !== target.cover, after
 const hasImg = await js("!!document.querySelector('.drawer.on .dc')");
 check("详情里换上了新图", hasImg === true);
 
-/* 移除封面：文件删掉，详情退回「无封面」。换封面那条老路没有因为走网络而变样 */
+/* 移除封面：要二次确认，确认之后文件删掉，详情退回「无封面」 */
 await clickText(".dcacts .mini", "移除");
+await wait(500);
+const asked = await js("!!document.querySelector('.cfm')");
+check("移除封面要二次确认", asked === true);
+await clickText(".cfm button", "移除");
 await wait(1800);
 const cleared = JSON.parse(
   String(
