@@ -911,6 +911,35 @@ button, input, select { font-family: inherit; }
 }
 .sb-foot .mini { flex: 1; justify-content: center; }
 
+/* 系列改名。两个名字一上一下，原名下面那句话交代它会动系列总评的文件名 */
+.sedit {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.sedit-r { display: flex; align-items: center; gap: 8px; }
+.sedit-l { width: 62px; flex: none; font-size: 12px; color: var(--fg3); }
+.sedit input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.sedit input:focus { outline: none; border-color: var(--acc); }
+.sedit-hint { margin: 0; font-size: 11px; line-height: 1.65; color: var(--fg3); }
+.sedit-err { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--red); }
+.sedit-acts { display: flex; gap: 8px; }
+.snote { flex: none; margin: 9px 14px 0; font-size: 11.5px; line-height: 1.6; color: var(--acc2); }
+
 /* ---------- 排序圆片 ---------- */
 .sortbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .chip.sort { border-style: dashed; cursor: grab; }

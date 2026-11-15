@@ -9,7 +9,8 @@ import type {
   FieldPatch,
   FieldType,
   ReviewInput,
-  ReviewPatch
+  ReviewPatch,
+  SeriesPatch
 } from "../shared/types";
 
 const api: BooklibApi = {
@@ -34,6 +35,7 @@ const api: BooklibApi = {
   seriesList: (mediaType?: string) => ipcRenderer.invoke("series:list", mediaType),
   seriesBooks: (id: number) => ipcRenderer.invoke("series:books", id),
   seriesReview: (id: number) => ipcRenderer.invoke("series:review", id),
+  seriesUpdate: (id: number, patch: SeriesPatch) => ipcRenderer.invoke("series:update", id, patch),
   reviews: () => ipcRenderer.invoke("reviews:list"),
   reviewFileName: (kind: string, id: number) => ipcRenderer.invoke("reviews:fileName", kind, id),
   setRead: (id: string, read: boolean) => ipcRenderer.invoke("books:setRead", id, read),

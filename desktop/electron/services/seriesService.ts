@@ -1,5 +1,6 @@
 import type { DB } from "../db";
-import type { BookRow, SeriesInfo } from "../../shared/types";
+import type { BookRow, SeriesInfo, SeriesPatch, SeriesResult } from "../../shared/types";
+import { rebuildFts } from "../db/fts";
 import { listBooks } from "./bookService";
 import { seriesDisplay, seriesLabel, seriesTitle } from "../../shared/seriesText";
 
@@ -81,4 +82,88 @@ export function seriesReviewOf(db: DB, id: number): { id: number; md: string; gr
     .prepare("SELECT id, md, grade FROM reviews WHERE series_id = ? AND book_id IS NULL AND deleted_at IS NULL")
     .get(id) as any;
   return r ? { id: r.id, md: r.md || "", grade: r.grade || "normal" } : null;
+}
+
+/** 单个系列，形状与集合里的一格相同 */
+export function oneSeries(db: DB, id: number): SeriesInfo | undefined {
+  const hit = listSeries(db).find((s) => s.id === id);
+  if (hit) return hit;
+  /* 名下没有在架的书时集合里不会出现它，界面仍要有个能显示的东西 */
+  const r = db.prepare("SELECT id, name, zh_name AS zhName, media_type AS mediaType FROM series WHERE id = ?").get(id) as any;
+  if (!r) return undefined;
+  return {
+    id: r.id,
+    name: r.name,
+    zhName: r.zhName || "",
+    label: seriesLabel(seriesDisplay(r.zhName, r.name)),
+    original: seriesLabel(r.name),
+    mediaType: r.mediaType,
+    n: 0,
+    read: 0,
+    avg: null,
+    cover: "",
+    coverV: "",
+    updatedAt: ""
+  };
+}
+
+/**
+ * 改系列名。只认原名与译名两个键，传哪个写哪个，没传的保持原值。
+ *
+ * 原名是唯一键的一半，撞上同媒介下别的系列就写不进去，直接拒并说清那边名下有几本。
+ * 译名没有唯一约束，撞了只提示不拦，拦死了反而挡路；后果是书评首部写这个译名时
+ * 可能认到另一个系列上去，提示足够。
+ *
+ * 文件那边不在这里做。系列总评的文件名由原名派生，改名之后由调用方拿返回的 renamed
+ * 去走 writeOne，服务层不碰文件系统。
+ */
+export function renameSeries(db: DB, id: number, patch: SeriesPatch): SeriesResult {
+  const cur = db
+    .prepare("SELECT id, name, zh_name AS zhName, media_type AS mediaType FROM series WHERE id = ?")
+    .get(id) as any;
+  if (!cur) return { ok: false, msg: "这个系列不在库里" };
+
+  const name = patch.name === undefined ? String(cur.name) : String(patch.name).trim();
+  const zhName = patch.zhName === undefined ? String(cur.zhName || "") : String(patch.zhName).trim();
+  if (!name) return { ok: false, msg: "系列原名不能空着，它是这个系列的身份" };
+
+  const oldName = String(cur.name);
+  const oldZh = String(cur.zhName || "");
+  if (name === oldName && zhName === oldZh) return { ok: true, series: oneSeries(db, id) };
+
+  if (name !== oldName) {
+    const hit = db
+      .prepare("SELECT id FROM series WHERE media_type = ? AND name = ? AND id <> ?")
+      .get(cur.mediaType, name, id) as any;
+    if (hit) {
+      const n = (db.prepare("SELECT COUNT(*) AS n FROM books WHERE series_id = ? AND deleted_at IS NULL").get(hit.id) as any)
+        .n as number;
+      return {
+        ok: false,
+        msg:
+          "「" + cur.mediaType + "」下已经有一个叫《" + seriesLabel(name) + "》的系列，名下 " + n + " 本。" +
+          "合并系列本版不做，换个名字，或者先把书挪过去"
+      };
+    }
+  }
+
+  let warn = "";
+  if (zhName) {
+    const others = db.prepare("SELECT name, zh_name FROM series WHERE id <> ?").all(id) as any[];
+    const clash = others.find((r) => {
+      const zh = String(r.zh_name || "");
+      return (zh && seriesLabel(zh) === zhName) || seriesLabel(String(r.name || "")) === zhName;
+    });
+    if (clash) warn = "这个译名与另一个系列重了，书评首部写这个名字时可能认到那个系列上";
+  }
+
+  const run = db.transaction(() => {
+    db.prepare("UPDATE series SET name = ?, zh_name = ? WHERE id = ?").run(name, zhName, id);
+    /* 全文索引的系列列是原名与译名拼起来的，不会自己跟，名下每本都得重灌 */
+    const books = db.prepare("SELECT id FROM books WHERE series_id = ? AND deleted_at IS NULL").all(id) as any[];
+    for (const b of books) rebuildFts(db, String(b.id));
+  });
+  run();
+
+  return { ok: true, msg: warn || undefined, series: oneSeries(db, id), renamed: name !== oldName };
 }

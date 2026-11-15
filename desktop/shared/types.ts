@@ -237,6 +237,21 @@ export interface SeriesInfo {
   updatedAt: string;
 }
 
+/** 改系列名：只传要改的那个键，没传的保持原值 */
+export interface SeriesPatch {
+  name?: string;
+  zhName?: string;
+}
+
+export interface SeriesResult {
+  ok: boolean;
+  /** 失败原因是拦下的理由，成功时是提醒（比如译名与别的系列重了） */
+  msg?: string;
+  series?: SeriesInfo;
+  /** 原名真的换了，系列总评的文件名要跟着改 */
+  renamed?: boolean;
+}
+
 export interface ReviewRow {
   id: number;
   bookId: string | null;
@@ -468,6 +483,8 @@ export interface BooklibApi {
   seriesList(mediaType?: string): Promise<SeriesInfo[]>;
   seriesBooks(id: number): Promise<BookRow[]>;
   seriesReview(id: number): Promise<{ id: number; md: string; grade: string } | null>;
+  /** 改系列原名与译名。原名撞键会被拒，译名撞名只提示 */
+  seriesUpdate(id: number, patch: SeriesPatch): Promise<SeriesResult>;
   reviews(): Promise<ReviewRow[]>;
   /** 单篇导出用的文件名，与落盘那份同一套规则（作者-《书名》书评.md / 作者-《系列名》系列.md） */
   reviewFileName(kind: string, id: number): Promise<string>;
