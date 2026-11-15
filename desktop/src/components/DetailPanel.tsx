@@ -4,6 +4,7 @@ import type { BookPatch, BookRow, CatNode, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
 import { FieldEditor, patchOf, valuesOf } from "./FieldRenderer";
 import CoverSearch from "./CoverSearch";
+import CoverViewer from "./CoverViewer";
 import Confirm from "./Confirm";
 
 interface Props {
@@ -22,6 +23,12 @@ interface Loaded {
 /* 详情是右侧抽屉，点外侧遮罩或按 Esc 收起，和 demo 一致；字段全部可直接改，改完自动落库 */
 export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
   const [data, setData] = useState<Loaded | null>(null);
+  /* 大图开着的时候，Esc 先收大图，别把整个抽屉一起收掉 */
+  const [coverOpen, setCoverOpen] = useState(false);
+
+  useEffect(() => {
+    setCoverOpen(false);
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -40,11 +47,11 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
       /* 正在输入框里按 Esc 是取消输入，不该把抽屉关掉 */
       const t = e.target as HTMLElement | null;
       if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !coverOpen) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [id, onClose]);
+  }, [id, onClose, coverOpen]);
 
   const open = !!id && !!data;
 
@@ -57,6 +64,8 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
             key={data.book.id}
             data={data}
             fields={fields}
+            coverOpen={coverOpen}
+            setCoverOpen={setCoverOpen}
             onClose={onClose}
             onSaved={onSaved}
             onPatched={(nb) => setData((d) => (d ? { ...d, book: nb } : d))}
@@ -70,12 +79,16 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
 function Body({
   data,
   fields,
+  coverOpen,
+  setCoverOpen,
   onClose,
   onSaved,
   onPatched
 }: {
   data: Loaded;
   fields: FieldDef[];
+  coverOpen: boolean;
+  setCoverOpen: (v: boolean) => void;
   onClose: () => void;
   onSaved: () => void;
   onPatched: (b: BookRow) => void;
@@ -212,7 +225,17 @@ function Body({
       <div className="db">
         <div className="dtop">
           <div className="dcwrap">
-            {b.cover ? <img className="dc" src={coverUrl(b.cover, b.coverV)} alt="" /> : <div className="dc empty">无封面</div>}
+            {b.cover ? (
+              <img
+                className="dc click"
+                src={coverUrl(b.cover, b.coverV)}
+                alt=""
+                title="点击看大图"
+                onClick={() => setCoverOpen(true)}
+              />
+            ) : (
+              <div className="dc empty">无封面</div>
+            )}
             <div className="dcacts">
               <button className="mini xs" onClick={changeCover} title="选一张本地图片作为封面，旧图会被替换掉">
                 换封面
@@ -270,6 +293,10 @@ function Body({
           onOk={clearCover}
           onCancel={() => setAskCover(false)}
         />
+      ) : null}
+
+      {b.cover && coverOpen ? (
+        <CoverViewer src={coverUrl(b.cover, b.coverV)} title={b.title} onClose={() => setCoverOpen(false)} />
       ) : null}
     </div>
   );
