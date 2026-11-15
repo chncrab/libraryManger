@@ -30,6 +30,15 @@ body {
 
 button, input, select { font-family: inherit; }
 
+/* 按钮里的文字一律居中摆。浏览器把 button 的行盒贴在上边，
+   高度一固定、各按钮字号又不一样，字就会偏上，一排按钮看着高低不齐 */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .app { display: flex; flex-direction: column; height: 100%; }
 
 /* 顶栏 */
@@ -310,7 +319,7 @@ button, input, select { font-family: inherit; }
   border-radius: 6px;
   background: var(--bg3);
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
@@ -472,7 +481,7 @@ button, input, select { font-family: inherit; }
   border-radius: 5px;
   background: var(--bg3);
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -583,7 +592,7 @@ button, input, select { font-family: inherit; }
 .emptyguide .eg-t { font-size: 15px; color: var(--fg); letter-spacing: 0.5px; }
 .emptyguide .eg-d { margin-top: 12px; font-size: 12.5px; line-height: 1.85; color: var(--fg2); }
 .emptyguide .eg-acts { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
-.emptyguide .eg-acts .mini { height: 30px; padding: 0 14px; font-size: 12.5px; }
+.emptyguide .eg-acts .mini { height: 30px; padding: 0 16px; font-size: 13px; }
 .emptyguide .eg-path {
   margin-top: 18px;
   font-size: 11px;
@@ -636,7 +645,7 @@ button, input, select { font-family: inherit; }
 .cfm-b { display: flex; justify-content: flex-end; gap: 8px; }
 .mini.danger { color: var(--red); border-color: rgba(196, 85, 63, 0.5); }
 .mini.danger:hover { background: rgba(196, 85, 63, 0.16); border-color: var(--red); color: var(--red); }
-.mini.xs { height: 19px; padding: 0 7px; font-size: 10.5px; }
+.mini.xs { height: 20px; padding: 0 8px; font-size: 11px; }
 .toast {
   position: fixed;
   left: 50%;
@@ -795,7 +804,7 @@ button, input, select { font-family: inherit; }
 .cad-num { width: 42px; text-align: right; color: var(--fg3); font-size: 11px; flex: none; }
 .cad-acts { display: flex; gap: 4px; flex: none; opacity: 0.5; transition: opacity 0.12s; }
 .cad-r:hover .cad-acts { opacity: 1; }
-.cad-acts .mini { height: 20px; padding: 0 7px; font-size: 10.5px; }
+.cad-acts .mini { height: 20px; padding: 0 8px; font-size: 11px; }
 .cad-par {
   width: 96px;
   height: 20px;
@@ -1026,8 +1035,10 @@ button, input, select { font-family: inherit; }
 
 /* 详情封面下方的换图入口 */
 .dcwrap { width: 104px; flex: none; }
-.dcacts { display: flex; gap: 4px; margin-top: 5px; }
-.dcacts .mini { flex: 1; justify-content: center; padding: 0 4px; }
+/* 封面只有 104 宽，三个词挤一行会顶到栏外，分成两行摆 */
+.dcacts { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 5px; }
+.dcacts .mini { padding: 0 4px; }
+.dcacts .mini:last-child { grid-column: 1 / -1; }
 
 /* 书评库的动作条：刷新、重命名，右边跟一句目录里现有几份 md */
 .rvs-acts { display: flex; align-items: center; gap: 6px; padding: 0 12px 7px; }
@@ -1063,16 +1074,20 @@ button, input, select { font-family: inherit; }
 }
 .gate-lead { color: var(--fg2); font-size: 13px; line-height: 1.9; }
 .gate-acts { display: flex; align-items: center; gap: 10px; margin: 26px 0 12px; }
-.gate-main { padding: 8px 18px; font-size: 13px; }
+/* 两个按钮同高同字号，主次只靠颜色分，不靠大小 */
+.gate-acts .mini { height: 30px; padding: 0 16px; font-size: 13px; }
+.gate-main { border-color: var(--acc); color: var(--acc2); }
 .gate-hint { color: var(--fg3); font-size: 11.5px; min-height: 18px; }
 .gate-recent { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 14px; }
 .gr-t { color: var(--fg3); font-size: 11px; letter-spacing: 1px; margin-bottom: 8px; }
 .gr-row {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 10px;
   width: 100%;
   text-align: left;
+  line-height: 1.4;
   background: var(--bg2);
   border: 1px solid var(--line);
   border-radius: var(--r);
