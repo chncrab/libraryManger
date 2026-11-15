@@ -286,7 +286,7 @@ export function facets(db: DB, media = ""): Facets {
     ),
     /* 分类要把没有书的大分类也带回来，否则左栏摆不出分组标题。
        数字按整个子树去重统计，一本书挂了同组的两个标签也只算一次，
-       否则「题材」这类父级会把 1245 本的书库数出 1249 来 */
+       否则父级分类会把同一本书重复计入，合计超过书库本身的册数 */
     categories: all(
       `SELECT c.id, c.name, c.tier, c.ord, c.parent_id AS parentId,
               (SELECT COUNT(DISTINCT bc2.book_id)
