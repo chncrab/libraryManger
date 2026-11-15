@@ -761,6 +761,7 @@ export default function App() {
           }}
           onWriteReview={writeSeriesReview}
           onFilterSeries={onlySeries}
+          onChanged={bump}
         />
       ) : null}
 

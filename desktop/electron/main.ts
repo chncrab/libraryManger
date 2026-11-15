@@ -21,7 +21,7 @@ import {
   moveReviewToBook,
   reviewFileName
 } from "./services/reviewService";
-import { listSeries, seriesBooks, seriesReviewOf } from "./services/seriesService";
+import { listSeries, renameSeries, seriesBooks, seriesReviewOf } from "./services/seriesService";
 import {
   listFields,
   createField,
@@ -75,7 +75,7 @@ import {
   copyLibrary
 } from "./services/libraryService";
 import type { LibraryPaths } from "./services/libraryService";
-import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch } from "../shared/types";
+import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch, SeriesPatch } from "../shared/types";
 import type { CoverBatchState, CoverCandidate } from "../shared/types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "";
@@ -663,6 +663,18 @@ function registerIpc(): void {
   ipcMain.handle("series:list", (_e, mediaType?: string) => listSeries(D(), mediaType || ""));
   ipcMain.handle("series:books", (_e, id: number) => seriesBooks(D(), id));
   ipcMain.handle("series:review", (_e, id: number) => seriesReviewOf(D(), id));
+  /**
+   * 改系列名。库改完再看要不要动文件：系列总评的文件名由原名派生，
+   * 原名换了就重写一次，走 writeOne 做真改名。文件出错不影响库里已经是新名字。
+   */
+  ipcMain.handle("series:update", (_e, id: number, patch: SeriesPatch) => {
+    const r = renameSeries(D(), id, patch);
+    if (r.ok && r.renamed) {
+      const rv = seriesReviewOf(D(), id);
+      if (rv) writeOne(D(), reviewDir(), "series", rv.id);
+    }
+    return r;
+  });
   ipcMain.handle("reviews:list", () => listReviews(D()));
   /* 单篇导出用同一个命名规则，界面别自己拼文件名，否则和落盘那份对不上 */
   ipcMain.handle("reviews:fileName", (_e, kind: string, id: number) => reviewFileName(D(), { kind, id }));
