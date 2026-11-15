@@ -22,8 +22,8 @@ const HEADERS = { "User-Agent": UA, Referer: REFERER };
 const BLOCK_CODES = new Set([403, 418, 429]);
 /** 缓存有效期，二十四小时内不重复打 */
 const CACHE_TTL = 24 * 60 * 60 * 1000;
-/** 批量里每本之间停多久。冒烟要跑几十本，用环境变量压到 0，正式跑还是 1.5 秒 */
-export const GAP_MS = Number(process.env.BOOKLIB_COVER_GAP ?? 1500);
+/** 两次豆瓣请求之间隔多久。冒烟要跑几十本，用环境变量压到 0，正式跑是 2 秒 */
+export const GAP_MS = Number(process.env.BOOKLIB_COVER_GAP ?? 2000);
 /** 到这个分直接落盘，不到的进待确认队列 */
 export const MIN_SCORE = 60;
 

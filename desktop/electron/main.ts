@@ -473,9 +473,36 @@ function fakeHttp(): Http {
   };
 }
 
-const httpImpl = (): Http => (process.env.BOOKLIB_FAKE_COVER === "1" ? fakeHttp() : netHttp());
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 每回真往豆瓣发请求之前先等够间隔。一次搜索背后往往连着好几次请求，
+ * 联想接口、站内搜索、详情页、封面图各算一次，只在每本书之间停是不够的，
+ * 挡的就是这一串连发。单本搜封面、队列重试与批量都走这里，一并受管。
+ */
+let lastHitAt = 0;
+async function pace(): Promise<void> {
+  const rest = GAP_MS - (Date.now() - lastHitAt);
+  if (rest > 0) await sleep(rest);
+  lastHitAt = Date.now();
+}
+
+function paced(inner: Http): Http {
+  return {
+    async text(url, headers) {
+      await pace();
+      return inner.text(url, headers);
+    },
+    async bytes(url, headers) {
+      await pace();
+      return inner.bytes(url, headers);
+    }
+  };
+}
+
+/** 不加间隔的那一份。缩略图预览一次要十几张，走图床，不参与排队 */
+const rawHttp = (): Http => (process.env.BOOKLIB_FAKE_COVER === "1" ? fakeHttp() : netHttp());
+const httpImpl = (): Http => paced(rawHttp());
 
 /**
  * 撞上豆瓣拦截时给界面与批量用的一句话。软限流是它把「搜索访问太频繁」
@@ -488,7 +515,7 @@ function blockMsg(e: BlockedError): string {
 }
 
 /**
- * 批量跑一遍缺封面的书。串行，每本之间停一会儿，撞上限速就整批停，
+ * 批量跑一遍缺封面的书。串行，两次请求之间由 pace 隔开，撞上限速就整批停，
  * 剩下的一本不动、留在库里等下次。已经排进队列的也算处理过，不会重复弹。
  */
 async function runCoverBatch(backfill: boolean): Promise<void> {
@@ -551,7 +578,6 @@ async function runCoverBatch(backfill: boolean): Promise<void> {
       batchState = { ...batchState, failed: batchState.failed + 1, done: batchState.done + 1 };
     }
     emitBatch();
-    await sleep(GAP_MS);
   }
 
   batchState = {
@@ -856,7 +882,8 @@ function registerIpc(): void {
     const u = String(url || "");
     if (!/^https?:\/\//i.test(u)) return "";
     try {
-      const r = await http.bytes(u, { "User-Agent": "Mozilla/5.0", Referer: "https://book.douban.com/" });
+      /* 预览图一次要十几张，排队等间隔半天出不来，图床也不吃这套限速，走不加间隔那份 */
+      const r = await rawHttp().bytes(u, { "User-Agent": "Mozilla/5.0", Referer: "https://book.douban.com/" });
       if (r.status !== 200 || !r.bytes.byteLength) return "";
       const ct = String(r.contentType || "image/jpeg").split(";")[0].trim() || "image/jpeg";
       return "data:" + ct + ";base64," + Buffer.from(r.bytes).toString("base64");
