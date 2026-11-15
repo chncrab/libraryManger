@@ -692,6 +692,11 @@ button {
 .drow2 { display: flex; gap: 8px; align-items: center; }
 /* 所属系列的原名，跟在译名后头，长了就截断，不挤走两个输入框 */
 .dorig { font-size: 11.5px; min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 系列原名单独一行，下面跟一句说明；改不动时那句话换成理由，能换行不受挤 */
+.dcol { display: flex; flex-direction: column; gap: 3px; }
+.dcol-hint, .dcol-err { font-size: 11.5px; line-height: 1.55; }
+.dcol-hint { color: var(--fg3); }
+.dcol-err { color: var(--red); }
 .drow2 .chk { display: flex; align-items: center; gap: 5px; color: var(--fg2); font-size: 12px; flex: none; }
 .drow2 .chk input { width: auto; }
 

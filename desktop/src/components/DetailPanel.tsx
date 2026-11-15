@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import api, { coverUrl } from "../api";
 import type { BookPatch, BookRow, CatNode, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
@@ -177,18 +177,31 @@ function Body({
   const merged = new Set(Object.values(PAIRS).flat());
   const row = (f: FieldDef) => {
     const mates = (PAIRS[f.key] || []).map((k) => rest.find((x) => x.key === k)).filter(Boolean) as FieldDef[];
+    /* 系列有两个名字。格子里那个是这本书挂靠的名字，原名是系列自己的身份，
+       改原名动的是整个系列，所以单独成一行，走系列改名那条路 */
+    if (f.key === "series") {
+      return (
+        <Fragment key={f.key}>
+          <Row label={f.label}>
+            <div className="drow2">
+              {editor(f)}
+              {mates.map((m) => editor(m))}
+            </div>
+          </Row>
+          {b.seriesId ? (
+            <Row label="系列原名">
+              <SeriesNameField book={b} onPatched={onPatched} onSaved={onSaved} flash={flash} />
+            </Row>
+          ) : null}
+        </Fragment>
+      );
+    }
     if (mates.length) {
       return (
         <Row key={f.key} label={f.label}>
           <div className="drow2">
             {editor(f)}
             {mates.map((m) => editor(m))}
-            {/* 系列有两个名字，格子里只放得下一个，原名跟在后面小字带过 */}
-            {f.key === "series" && b.seriesOriginal && b.seriesOriginal !== b.seriesName ? (
-              <span className="dim dorig" title="系列原名">
-                （{b.seriesOriginal}）
-              </span>
-            ) : null}
           </div>
         </Row>
       );
@@ -307,6 +320,80 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div>
       <span>{label}</span>
       <span className="ctl">{children}</span>
+    </div>
+  );
+}
+
+/**
+ * 系列原名。改的是整个系列的身份，同系列的书一起变，系列总评的文件名也跟着改，
+ * 所以走 series:update，不走书籍补丁；改完重取这本书，让系列名与原名一起刷新。
+ */
+function SeriesNameField({
+  book,
+  onPatched,
+  onSaved,
+  flash
+}: {
+  book: BookRow;
+  onPatched: (b: BookRow) => void;
+  onSaved: () => void;
+  flash: (t: string) => void;
+}) {
+  const cur = book.seriesOriginal || "";
+  const [draft, setDraft] = useState(cur);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  /* 换书、或者改完重取回来，输入框跟着库里的值走 */
+  useEffect(() => {
+    setDraft(cur);
+    setErr("");
+  }, [cur, book.id]);
+
+  const save = async () => {
+    const v = draft.trim();
+    if (busy || v === cur) return;
+    if (!v) {
+      setDraft(cur);
+      setErr("系列原名不能空着，它是这个系列的身份");
+      return;
+    }
+    const sid = book.seriesId;
+    if (!sid) return;
+    setBusy(true);
+    try {
+      const r = await api.seriesUpdate(sid, { name: v });
+      if (!r.ok) {
+        setErr(r.msg || "没有改成");
+        return;
+      }
+      const d = await api.getBook(book.id);
+      if (d) onPatched(d.book);
+      onSaved();
+      setErr("");
+      flash(r.msg || "系列原名已改");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dcol">
+      <input
+        value={draft}
+        placeholder="原作语言的写法"
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            setDraft(cur);
+            setErr("");
+          }
+        }}
+      />
+      {err ? <div className="dcol-err">{err}</div> : <div className="dcol-hint">改的是整个系列的名字，同系列的书一起变</div>}
     </div>
   );
 }
