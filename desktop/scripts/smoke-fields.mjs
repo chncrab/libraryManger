@@ -54,6 +54,18 @@ delete env.NODE_OPTIONS;
 delete env.ELECTRON_RUN_AS_NODE;
 env.BOOKLIB_ROOT = lib;
 
+/* 端口被别的实例占着时，后面连上的是那一个，检查的也是它那份书库，
+   跑出来的结果全是别人的。先挡一道 */
+try {
+  const probe = await fetch(`http://127.0.0.1:${port}/json/version`);
+  if (probe.ok) {
+    console.log("端口 " + port + " 已被别的实例占着，先关掉它再跑");
+    process.exit(1);
+  }
+} catch {
+  /* 没起来就是干净的 */
+}
+
 console.log("起一个只跑字段的实例…");
 const child = spawn(
   electron,
@@ -155,7 +167,7 @@ const builtin = await js(`(async () => {
   return JSON.stringify({ n: fs2.length, keys: fs2.map(f => f.key), types: fs2.map(f => f.type) });
 })()`);
 const bi = JSON.parse(builtin);
-check("十八个内建字段都登记了", bi.n === 18, bi.n + " 个");
+check("十九个内建字段都登记了", bi.n === 19, bi.n + " 个");
 check("字段带着类型", bi.types.includes("date") && bi.types.includes("multiselect") && bi.types.includes("switch"), bi.types.join(","));
 
 /* ---- 字段管理弹层 ---- */

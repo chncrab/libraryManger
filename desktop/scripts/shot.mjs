@@ -63,6 +63,13 @@ for (const act of acts) {
   if (act.startsWith("detail:")) {
     await evalJs(`(() => { const c = document.querySelectorAll('.card')[${Number(act.slice(7))}]; if (c) c.click(); })()`);
     await wait(800);
+  } else if (act.startsWith("rdyear:")) {
+    /* 时间线上点开某一年，看那一年铺开后的样子 */
+    await evalJs(`(() => { const b = [...document.querySelectorAll('.rd-yh')].find(e => e.textContent.includes(${JSON.stringify(act.slice(7))})); if (b) b.click(); })()`);
+    await wait(700);
+  } else if (act === "rdrow") {
+    await evalJs("(() => { const r = document.querySelector('.rd-row'); if (r) r.click(); })()");
+    await wait(900);
   } else if (act === "review") {
     await clickText(".seg button", "书评");
     await wait(1200);
