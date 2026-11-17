@@ -172,8 +172,9 @@ function Body({
     />
   );
 
-  /* 系列与卷、已读与阅读日期在原界面里各占一行放两个控件，字段驱动之后照旧并排 */
-  const PAIRS: Record<string, string[]> = { series: ["index"], read: ["readDate"] };
+  /* 系列与卷在原界面里是一行放两个控件，字段驱动之后照旧并排。
+     阅读开始与结束各自成行，两条日期分开看更清楚，不必挤在一行 */
+  const PAIRS: Record<string, string[]> = { series: ["index"] };
   const merged = new Set(Object.values(PAIRS).flat());
   const row = (f: FieldDef) => {
     const mates = (PAIRS[f.key] || []).map((k) => rest.find((x) => x.key === k)).filter(Boolean) as FieldDef[];

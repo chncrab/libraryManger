@@ -83,6 +83,7 @@ export function updateBook(db: DB, id: string, p: BookPatch, coversDir = ""): Bo
   }
   if (p.isRead !== undefined) put("is_read", p.isRead ? 1 : 0);
   if (p.readDate !== undefined) put("read_date", String(p.readDate).trim());
+  if (p.readStart !== undefined) put("read_start", String(p.readStart).trim());
   if (p.rating !== undefined) put("rating", p.rating == null || p.rating <= 0 ? null : p.rating);
   if (p.ebookState !== undefined) put("ebook_state", String(p.ebookState).trim());
   if (p.note !== undefined) put("note", String(p.note));
@@ -171,13 +172,13 @@ export function copyBook(db: DB, id: string, coversDir = ""): BookRow | null {
   const run = db.transaction(() => {
     db.prepare(
       `INSERT INTO books (id, title, subtitle, original_title, original_subtitle, media_type, series_id, series_index,
-         country, is_mystery, publish_date, publish_year, is_read, read_date, rating, ebook_state, note, cover_file,
+         country, is_mystery, publish_date, publish_year, is_read, read_start, read_date, rating, ebook_state, note, cover_file,
          source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       nid, nextCopyTitle(db, src.title), src.subtitle, src.original_title, src.original_subtitle, src.media_type,
       src.series_id, src.series_index, src.country, src.is_mystery, src.publish_date, src.publish_year,
-      src.is_read, src.read_date, src.rating, src.ebook_state, src.note, src.cover_file, "local", now(), now()
+      src.is_read, src.read_start, src.read_date, src.rating, src.ebook_state, src.note, src.cover_file, "local", now(), now()
     );
     db.prepare("INSERT OR IGNORE INTO book_authors (book_id, author_id, role, ord) SELECT ?, author_id, role, ord FROM book_authors WHERE book_id = ?").run(nid, id);
     db.prepare("INSERT OR IGNORE INTO book_categories (book_id, category_id) SELECT ?, category_id FROM book_categories WHERE book_id = ?").run(nid, id);

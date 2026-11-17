@@ -328,7 +328,8 @@ button {
 .kv { margin-top: 12px; border-top: 1px solid var(--line); }
 /* 只认直接子层，否则会漏进多选下拉和双层行里，把里面的 div 也变成带下划线的行 */
 .kv > div { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
-.kv > div > span:first-child { width: 62px; flex: none; color: var(--fg3); }
+/* 62 装得下四个字，阅读开始时间这种六个字的会折成两行，按六个字留宽 */
+.kv > div > span:first-child { width: 76px; flex: none; color: var(--fg3); }
 .kv > div > span:last-child { color: var(--fg2); word-break: break-all; }
 .review { margin-top: 8px; white-space: pre-wrap; line-height: 1.7; color: var(--fg2); font-size: 12.5px; }
 
@@ -1364,3 +1365,603 @@ button {
   font-size: 12px;
   color: rgba(234, 230, 223, 0.5);
 }
+
+/* ---- 阅读时间线 ---- */
+/* 一条轴，书按读的那段日子站上去，早的在前。横排竖排同一套逻辑，
+   横排是轴横着、封面上下交错，竖排是轴竖着、封面左右交错。
+   封面与字号按 --v 走（放大时跟着变大，到 2.2 倍封顶），
+   落点按 --k 走，放大到很深处只有轴继续拉开，一天一格才站得开 */
+.rd-bar b.rd-n {
+  color: var(--acc2);
+  font-weight: normal;
+  font-size: 12.5px;
+  padding: 0 2px;
+}
+.rd-scope { flex: none; font-size: 11.5px; color: var(--fg3); padding: 0 2px; }
+.rd-switch button { height: 22px; padding: 0 9px; font-size: 11.5px; border-radius: 11px; }
+.rd-axscroll { padding: 0; overflow: hidden; }
+/* 指针事件挂在整块上：轴上下那片空白也能拖、也能滚轮缩放 */
+.rd-axwrap { display: flex; flex-direction: column; height: 100%; cursor: grab; touch-action: none; }
+.rd-axwrap:active { cursor: grabbing; }
+.rd-axwrap .rd-nav { cursor: default; }
+
+/* 顶上那条总览：按年等分，一年一格，格里的柱子是那年读完几本。
+   滑块就是现在看得见的这一段，拖到哪年，光标上方浮出「2016 年 · 31 本」。
+   等分的是导航条，不是轴上那条时间线 —— 轴得跟着日期走 */
+.rd-nav {
+  position: relative;
+  flex: none;
+  height: 26px;
+  margin: 10px 18px 0;
+  background: linear-gradient(180deg, var(--bg2), var(--bg));
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  touch-action: none;
+}
+.rd-nav.on { border-color: rgba(224, 185, 74, 0.38); }
+.rd-nav-marks { position: absolute; inset: 0; overflow: hidden; border-radius: 11px; }
+/* 一年一根柱，高是那年读完的本数，一本没读的年份空着 */
+.rd-nav-bar {
+  position: absolute;
+  bottom: 3px;
+  transform: translateX(-50%);
+  border-radius: 1px 1px 0 0;
+  background: rgba(224, 185, 74, 0.62);
+  pointer-events: none;
+}
+.rd-nav-line {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--line2);
+  opacity: 0.7;
+  pointer-events: none;
+}
+/* 光标那根竖线，拖动时帮着对准 */
+.rd-nav-hair {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 0;
+  width: 1px;
+  background: rgba(224, 185, 74, 0.75);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.rd-nav.on .rd-nav-hair { opacity: 1; }
+.rd-nav-thumb {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  top: -2px;
+  bottom: -2px;
+  background: rgba(224, 185, 74, 0.12);
+  border: 1px solid rgba(224, 185, 74, 0.4);
+  border-radius: 11px;
+  cursor: grab;
+}
+.rd-nav:active .rd-nav-thumb { cursor: grabbing; }
+/* 拖动时浮出来的那行：哪一年、那年读完几本。
+   挂在下面不放上面：导航条贴着顶边，浮在上面会被滚动框裁掉 */
+.rd-nav-bub {
+  position: absolute;
+  top: calc(100% + 7px);
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  font-size: 11.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid rgba(224, 185, 74, 0.32);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 9;
+}
+
+/* ---- 竖着摆的那条：贴在最右边，一格一年从上往下，柱子朝右长 ---- */
+.rd-nav.v {
+  width: 26px;
+  height: var(--navh, 70vh);
+  margin: 0;
+  border-radius: 13px;
+}
+/* 柱子朝右长：宽是本数，高一格 */
+.rd-nav.v .rd-nav-bar {
+  left: 4px;
+  bottom: auto;
+  transform: translateY(-50%);
+  border-radius: 1px 3px 3px 1px;
+}
+/* 年界线横过来，画在两根之间 */
+.rd-nav.v .rd-nav-line {
+  left: 4px;
+  right: 4px;
+  top: auto;
+  bottom: auto;
+  width: auto;
+  height: 1px;
+}
+.rd-nav.v .rd-nav-hair {
+  left: -3px;
+  right: -3px;
+  top: 0;
+  bottom: auto;
+  width: auto;
+  height: 1px;
+}
+.rd-nav.v .rd-nav-thumb {
+  left: -2px;
+  right: -2px;
+  top: 0;
+  bottom: auto;
+  width: auto;
+  height: 100%;
+}
+/* 气泡浮在条的左边：右边就是窗口边，没地方放 */
+.rd-nav.v .rd-nav-bub {
+  top: auto;
+  left: auto;
+  right: calc(100% + 9px);
+  transform: translateY(-50%);
+}
+
+.rd-axis {
+  --k: 1;
+  --v: 1;
+  position: relative;
+  flex: none;
+  width: 100%;
+  /* 高度按封面字号算，最多占满整块（放大到顶也不至于被上下裁掉） */
+  height: min(calc(352px * var(--v) + 12px), 100%);
+  margin: auto 0;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+.rd-rail { position: absolute; inset: 0; will-change: transform; }
+
+/* 轴线在正中，两端淡出去，不像一根硬线 */
+.rd-line {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 1px;
+  width: calc(var(--wx) * var(--k) * 1px);
+  background: linear-gradient(90deg, transparent, rgba(234, 230, 223, 0.24) 3%, rgba(234, 230, 223, 0.24) 97%, transparent);
+}
+
+/* 刻度：年最长最淡，月短一点，日更短。标签一律挂在轴线下面 */
+.rd-tk { position: absolute; left: calc(var(--wx) * var(--k) * 1px); top: 50%; height: 0; }
+.rd-tk::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: calc(6px * var(--v));
+  background: var(--line2);
+}
+.rd-tk.year::before { height: calc(11px * var(--v)); background: var(--fg3); opacity: 0.55; }
+.rd-tk.day::before { height: calc(4px * var(--v)); opacity: 0.6; }
+/* 日号一律不写，星期天那根加粗一档，扫一眼就知道一个月走到哪 */
+.rd-tk.day.sun::before {
+  width: 2px;
+  height: calc(7px * var(--v));
+  background: var(--fg2);
+  opacity: 0.85;
+}
+.rd-tk span {
+  position: absolute;
+  left: calc(var(--ww) * 0.5 * var(--k) * 1px);
+  top: calc(6px * var(--v));
+  transform: translateX(-50%);
+  font-size: calc(9.5px * var(--v));
+  line-height: 1.2;
+  color: var(--fg3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.rd-tk.year span {
+  font-size: calc(14px * var(--v));
+  font-weight: 600;
+  color: var(--fg2);
+  letter-spacing: 0.4px;
+}
+/* 月刻度比日、年都显眼一点，扫一眼就知道走到哪个月 */
+.rd-tk.month::before { width: 2px; height: calc(11px * var(--v)); background: var(--fg2); opacity: 0.9; }
+.rd-tk.month span {
+  font-size: calc(12.5px * var(--v));
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+}
+.rd-tk.day span { opacity: 0.85; }
+
+.rd-node {
+  position: absolute;
+  left: calc(var(--wx) * var(--k) * 1px);
+  /* 封面离轴 40，中间那 18 留给基线上的长条、日号与连线 */
+  bottom: calc(50% + 40px * var(--v));
+  width: calc(66px * var(--v));
+  height: calc(99px * var(--v));
+  cursor: pointer;
+}
+.rd-node.lane1 { top: calc(50% + 40px * var(--v)); bottom: auto; }
+.rd-card { position: relative; width: 100%; height: 100%; }
+
+/* 时间段：先从封面拉一根细线落到轴上，再让轴上一段金线漫开，
+   盖住这本读完的那几天。平时根本不画，鼠标停在这本上才动起来 ——
+   一屏几百本，满眼金线没法看 */
+.rd-probe {
+  position: absolute;
+  /* 对准轴上那段金线的中心，而不是封面的正中：被挤换轨时封面会挪，
+     金线按日期落位，两者偏一点，线要跟着日期走 */
+  left: calc((var(--bl) + var(--bw) / 2) * var(--k) * 1px);
+  width: 1px;
+  height: calc(40px * var(--v));
+  background: linear-gradient(180deg, rgba(224, 185, 74, 0.3), rgba(224, 185, 74, 0.85));
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.16s ease-out;
+  pointer-events: none;
+}
+.rd-node.lane0 .rd-probe { top: 100%; }
+.rd-node.lane1 .rd-probe {
+  bottom: 100%;
+  transform-origin: bottom;
+  background: linear-gradient(0deg, rgba(224, 185, 74, 0.3), rgba(224, 185, 74, 0.85));
+}
+.rd-node:hover .rd-probe { transform: scaleY(1); }
+
+/* 轴上那一段：从开始那天的起点漫到读完那天的终点，一格就是一天。
+   窄到看不见时兜个 3px，不等于改天数，只是让人看得见落点 */
+.rd-run {
+  position: absolute;
+  left: calc(var(--bl) * var(--k) * 1px);
+  width: max(calc(var(--bw) * var(--k) * 1px), 3px);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--acc2);
+  box-shadow: 0 0 8px rgba(224, 185, 74, 0.5);
+  transform: translateY(-50%) scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.18s cubic-bezier(0.22, 0.68, 0.3, 1);
+  pointer-events: none;
+}
+.rd-node.lane0 .rd-run { top: calc(100% + 40px * var(--v)); }
+.rd-node.lane1 .rd-run { top: calc(-40px * var(--v)); }
+.rd-node:hover .rd-run { transform: translateY(-50%) scaleX(1); transition-delay: 0.1s; }
+
+.rd-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--bg3);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.rd-img.empty { border: 1px dashed var(--line2); background: transparent; box-shadow: none; }
+.rd-node:hover .rd-img {
+  transform: scale(1.035);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
+  outline: 1px solid rgba(224, 185, 74, 0.5);
+  outline-offset: 1px;
+}
+
+/* 书名挂在封面外侧（远离轴那边），两轨各朝各的方向长，宽度比封面略宽一点
+   好让两行字不至于每行只挤三四个字 */
+.rd-t {
+  position: absolute;
+  left: -14%;
+  bottom: calc(100% + 3px * var(--v));
+  width: 128%;
+  font-size: calc(9.5px * var(--v));
+  line-height: 1.28;
+  color: var(--fg2);
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  pointer-events: none;
+}
+.rd-node.lane1 .rd-t { bottom: auto; top: calc(100% + 3px * var(--v)); }
+
+/* 长条两头的日号，只写几号。贴着长条的端头，挂在条与封面之间那窄缝里 */
+.rd-d0,
+.rd-d1 {
+  position: absolute;
+  font-size: calc(9.5px * var(--v));
+  line-height: 1;
+  color: var(--fg2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.rd-node:hover .rd-d0,
+.rd-node:hover .rd-d1 { opacity: 1; }
+.rd-node.lane0 .rd-d0,
+.rd-node.lane0 .rd-d1 { bottom: calc(-16px * var(--v)); }
+.rd-node.lane1 .rd-d0,
+.rd-node.lane1 .rd-d1 { top: calc(-16px * var(--v)); }
+.rd-d0 {
+  left: calc(var(--bl) * var(--k) * 1px - 5px);
+  transform: translateX(-100%);
+}
+.rd-d1 {
+  left: calc((var(--bl) + var(--bw)) * var(--k) * 1px + 5px);
+}
+.rd-axis.k-sm .rd-t,
+.rd-axis.k-sm .rd-d0,
+.rd-axis.k-sm .rd-d1 { display: none; }
+
+/* ---- 竖排瀑布 ---- */
+/* 轴在左，封面左右两列交错，一列挤了就往后错半格。
+   顶上那排年份是粘住的，滚到哪年都点得到，不按年折叠 */
+.rvwrap { width: 100%; margin: 0 auto; }
+/* 放大到超出容器宽度时，多出来的部分裁掉即可，别长出横向滚动条 */
+.scroll.rd-feedscroll { overflow-x: hidden; }
+/* 竖排右边那条总览。外层高度 0 只拿来粘住，不占内容宽度；
+   里面那条按 --navh 竖着装满一屏，翻到哪一年都在右边 */
+.rv-navslot {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  height: 0;
+  pointer-events: none;
+}
+.rv-navslot .rd-nav.v {
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: auto;
+}
+
+.rv {
+  --vi: 1;
+  --zi: 1;
+  position: relative;
+  margin: 0 auto;
+}
+/* 缩放由外面这层撑开高度、里面那层整体 transform。
+   以顶边中点为原点缩放，轴才一直落在容器正中，缩放不会把内容往一边甩 */
+.rv-scale { position: relative; margin: 0 auto; }
+.rv-scale .rv { position: absolute; left: 50%; top: 0; margin: 0; transform-origin: top center; }
+/* 轴在正中，条目左右交替。刻度标签做成压在轴上的小片，等于给这条河标了里程 */
+.rv-axis {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(1px * var(--zi));
+  background: linear-gradient(180deg, transparent, rgba(234, 230, 223, 0.24) 1.5%, rgba(234, 230, 223, 0.24) 98.5%, transparent);
+}
+.rv-tk { position: absolute; left: 0; width: 0; height: 1px; }
+.rv-tk::before {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 0;
+  width: 18px;
+  height: 1px;
+  background: var(--line2);
+  /* 外面那层按倍数缩放了，这里按同一个倍数抵回去：放到三倍时
+     刻度线还是 1px，不会变成三像素的粗杠 */
+  transform: scale(var(--zi));
+}
+.rv-tk.year::before { left: -13px; width: 26px; background: var(--fg3); opacity: 0.55; }
+/* 日刻度只在放得很大的横排里出，这里跟着同一份刻度，周日也加粗一档 */
+.rv-tk.day.sun::before { left: -11px; width: 22px; height: 2px; background: var(--fg2); opacity: 0.85; }
+.rv-tk span {
+  position: absolute;
+  left: 0;
+  /* 字挂在它管的那一段正中，不压在刻度线上：一天是两点之间那一段 */
+  top: calc(var(--ww) * 0.5 * 1px);
+  transform: translate(-50%, -50%) scale(var(--zi));
+  padding: 1px 5px;
+  border-radius: 7px;
+  background: var(--bg);
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--fg3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.rv-tk.year span { font-size: 14px; font-weight: 600; color: var(--fg2); letter-spacing: 0.4px; }
+/* 月刻度做得比年、日都显眼，压轴的小片上看得清 */
+.rv-tk.month::before { width: 24px; left: -12px; height: 2px; background: var(--fg2); opacity: 0.9; }
+.rv-tk.month span {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+  padding: 1px 6px;
+}
+
+.rv-item {
+  position: absolute;
+  width: calc(346px * var(--vi));
+  height: calc(66px * var(--vi));
+  cursor: pointer;
+}
+/* 离轴那一侧留的距离按 --zi 定，屏幕上是固定的 46px；
+   封面与文字另装在 .rv-body 里，按 --vi 缩放 */
+.rv-item.col1 { left: calc(50% + 46px * var(--zi)); }
+.rv-item.col0 { right: calc(50% + 46px * var(--zi)); }
+.rv-body {
+  position: absolute;
+  top: 0;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 346px;
+  transform: scale(var(--vi));
+}
+.rv-item.col1 .rv-body { left: 0; transform-origin: left center; }
+/* 左半边倒过来排：封面贴着轴，文字朝外。缩放原点落在靠轴那侧，封面才一直贴着轴 */
+.rv-item.col0 .rv-body { right: 0; transform-origin: right center; flex-direction: row-reverse; text-align: right; }
+.rv-item.col0 .rv-m { justify-content: flex-end; }
+.rv-cov { position: relative; flex: none; width: 44px; height: 66px; }
+.rv-cov img {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 44px;
+  height: 66px;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--bg3);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.4);
+  transition: box-shadow 0.16s ease;
+}
+.rv-covempty {
+  position: relative;
+  z-index: 1;
+  width: 44px;
+  height: 66px;
+  border: 1px dashed var(--line2);
+  border-radius: 3px;
+}
+
+/* 时间段：先从封面横一根细线到轴上，再沿轴漫下来，盖住读的那几天。
+   平时不画，鼠标停在这条上才动起来 */
+.rv-probe {
+  position: absolute;
+  top: 33px;
+  width: 46px;
+  height: calc(1px * var(--zi));
+  background: linear-gradient(90deg, rgba(224, 185, 74, 0.3), rgba(224, 185, 74, 0.85));
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.16s ease-out;
+  pointer-events: none;
+}
+.rv-item.col1 .rv-probe { left: calc(-46px * var(--zi)); width: calc(46px * var(--zi)); }
+.rv-item.col0 .rv-probe {
+  right: calc(-46px * var(--zi));
+  width: calc(46px * var(--zi));
+  transform-origin: left;
+  background: linear-gradient(270deg, rgba(224, 185, 74, 0.3), rgba(224, 185, 74, 0.85));
+}
+.rv-item:hover .rv-probe { transform: scaleX(1); }
+
+/* 轴上那一段：从开始那天的起点漫到读完那天的终点，一格就是一天 */
+.rv-run {
+  position: absolute;
+  width: calc(4px * var(--zi));
+  min-height: calc(3px * var(--zi));
+  border-radius: 2px;
+  background: var(--acc2);
+  box-shadow: 0 0 8px rgba(224, 185, 74, 0.5);
+  transform: scaleY(0);
+  transform-origin: center top;
+  transition: transform 0.18s cubic-bezier(0.22, 0.68, 0.3, 1);
+  pointer-events: none;
+}
+/* 金线中心要压在轴上：左沿退「离轴 46 + 半个条宽」，条宽是 4×--zi */
+.rv-item.col1 .rv-run { left: calc(-48px * var(--zi)); }
+.rv-item.col0 .rv-run { right: calc(-48px * var(--zi)); }
+.rv-item:hover .rv-run { transform: scaleY(1); transition-delay: 0.1s; }
+
+/* 括号两头的日号，只写数字，挂在括号端头的上下外侧 */
+.rv-d0,
+.rv-d1 {
+  position: absolute;
+  font-size: calc(10px * var(--zi));
+  line-height: 1;
+  color: var(--fg2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+/* 紧贴金线外侧，离条 2px；以前挂在 -15px，隔着快三十像素 */
+.rv-item.col1 .rv-d0,
+.rv-item.col1 .rv-d1 { left: calc(-42px * var(--zi)); }
+.rv-item.col0 .rv-d0,
+.rv-item.col0 .rv-d1 { right: calc(-42px * var(--zi)); text-align: right; }
+.rv-item:hover .rv-d0,
+.rv-item:hover .rv-d1 { opacity: 1; }
+.rv-d0 { transform: translateY(-100%); }
+.rv-d1 { transform: translateY(2px); }
+
+.rv-txt { flex: 1; min-width: 0; padding-top: 2px; }
+.rv-t {
+  max-width: 292px;
+  font-size: 12.5px;
+  color: var(--fg);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rv-grade { margin-right: 4px; font-size: 11px; }
+.rv-a {
+  max-width: 292px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--fg3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rv-m {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rv-rate { color: var(--fg2); }
+.rv-rate b { color: var(--acc); font-weight: normal; margin-right: 1px; }
+.rv-item:hover .rv-t { color: var(--acc2); }
+.rv-item:hover .rv-cov img {
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
+  outline: 1px solid rgba(224, 185, 74, 0.5);
+  outline-offset: 1px;
+}
+
+/* ---- 时间线上的悬停小卡 ---- */
+/* 横排竖排共用。挂在 body 上跟着光标走，位置由脚本直接写 style */
+.rd-tip {
+  position: fixed;
+  z-index: 58;
+  max-width: 268px;
+  padding: 8px 10px 9px;
+  border-radius: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  visibility: hidden;
+  animation: rdTipIn 0.12s ease-out;
+}
+@keyframes rdTipIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.rd-tip-h { display: flex; align-items: baseline; gap: 5px; }
+.rd-tip-t { font-size: 12.5px; line-height: 1.35; color: var(--fg); }
+.rd-tip-g { font-size: 11px; }
+.rd-tip-a { margin-top: 2px; font-size: 10.5px; line-height: 1.35; color: var(--fg3); }
+.rd-tip-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+.rd-tip-kv b { font-weight: normal; color: var(--fg2); font-variant-numeric: tabular-nums; }
+.rd-tip-kv b.rd-tip-r { color: var(--acc); }

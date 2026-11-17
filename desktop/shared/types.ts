@@ -127,7 +127,10 @@ export interface BookRow {
   publishDate: string;
   publishYear: number | null;
   isRead: boolean;
+  /** 读完那天。空串表示没填 */
   readDate: string;
+  /** 开始读那天。空串表示没填，读取的地方按当天读完处理 */
+  readStart: string;
   rating: number | null;
   ebookState: string;
   note: string;
@@ -188,6 +191,51 @@ export interface BookQuery {
 export interface ListResult {
   total: number;
   rows: BookRow[];
+}
+
+/** 时间线上的一条。只装画那一条要用的东西，不把 BookRow 那二十几个字段搬过来 */
+export interface ReadEntry {
+  id: string;
+  title: string;
+  authors: string[];
+  seriesName: string;
+  seriesIndex: number | null;
+  cover: string;
+  coverV: string;
+  rating: number | null;
+  /** 开始读那天，没填与 end 相同 */
+  start: string;
+  /** 读完那天，空串表示这本只有开始时间 */
+  end: string;
+  /** 落在时间线上的那天，取 end，没有就取 start，年份分组也按它 */
+  anchor: string;
+  /** 起止差几天，当天读完是 1 */
+  days: number;
+  /** 有没有真的跨天，界面靠它决定要不要写成区间 */
+  span: boolean;
+  reviewGrade: string | null;
+}
+
+/** 时间线与日历顶栏那几个数，服务层一次算好，界面不另算一套 */
+export interface ReadStats {
+  /** 落在时间线上的本数 */
+  total: number;
+  /** 今年读完几本 */
+  yearRead: number;
+  /** 按年计数，新的在前 */
+  byYear: { year: number; n: number }[];
+  /** 按天计数，画日历用，早的在前 */
+  byDay: { day: string; n: number }[];
+  first: string;
+  last: string;
+  /** 一天里读过最多的是哪天、几本 */
+  busiest: { day: string; n: number } | null;
+  /** 有评分的那些的平均分 */
+  avgRating: number | null;
+  /** 最长连读：连着几天、止于哪天 */
+  streak: { days: number; end: string };
+  /** 标了已读却没填结束时间，落不到时间线上的本数 */
+  noDate: number;
 }
 
 export interface FacetItem {
@@ -356,6 +404,7 @@ export interface BookPatch {
   publishDate?: string;
   isRead?: boolean;
   readDate?: string;
+  readStart?: string;
   rating?: number | null;
   ebookState?: string;
   note?: string;
@@ -486,6 +535,10 @@ export interface BooklibApi {
   /** 改系列原名与译名。原名撞键会被拒，译名撞名只提示 */
   seriesUpdate(id: number, patch: SeriesPatch): Promise<SeriesResult>;
   reviews(): Promise<ReviewRow[]>;
+  /** 阅读时间线的全部条目，按结束日期从近到远；只读，不写库 */
+  readTimeline(media?: string): Promise<ReadEntry[]>;
+  /** 时间线顶栏那几个数 */
+  readStats(media?: string): Promise<ReadStats>;
   /** 单篇导出用的文件名，与落盘那份同一套规则（作者-《书名》书评.md / 作者-《系列名》系列.md） */
   reviewFileName(kind: string, id: number): Promise<string>;
   setRead(id: string, read: boolean): Promise<boolean>;

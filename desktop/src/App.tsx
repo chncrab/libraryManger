@@ -5,6 +5,7 @@ import GridView from "./components/GridView";
 import TableView from "./components/TableView";
 import DetailPanel from "./components/DetailPanel";
 import ReviewLib from "./components/ReviewLib";
+import ReadView from "./components/ReadView";
 import CtxMenu, { type CtxItem } from "./components/CtxMenu";
 import CategoryAdmin from "./components/CategoryAdmin";
 import FieldAdmin from "./components/FieldAdmin";
@@ -32,7 +33,7 @@ import type {
   SortSpec
 } from "../shared/types";
 
-type View = "grid" | "table" | "review";
+type View = "grid" | "table" | "review" | "read";
 
 const PAGE = 120;
 const STATES = ["实体", "私印", "预定中", "购物车", "无"];
@@ -204,7 +205,7 @@ export default function App() {
   const keep = useRef({ top: 0, count: 0 });
 
   useEffect(() => {
-    if (seriesMode || view === "review") return;
+    if (seriesMode || view === "review" || view === "read") return;
     let alive = true;
     const sameQuery = lastKey.current === qKey;
     if (!sameQuery) {
@@ -258,7 +259,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (view === "review") setPicked([]);
+    if (view === "review" || view === "read") setPicked([]);
   }, [view]);
 
   /* 全局快捷键：/ 搜书，Ctrl 1/2/3 切视图，Ctrl Shift L 换主题，Esc 收面板 */
@@ -283,9 +284,9 @@ export default function App() {
         setTheme((x) => (x === "dark" ? "light" : "dark"));
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && ["1", "2", "3"].includes(e.key)) {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && ["1", "2", "3", "4"].includes(e.key)) {
         e.preventDefault();
-        const v = (["grid", "table", "review"] as View[])[Number(e.key) - 1];
+        const v = (["grid", "table", "review", "read"] as View[])[Number(e.key) - 1];
         setMedia((m) => (isSeries(m) ? "全部" : m));
         setView(v);
       }
@@ -480,7 +481,7 @@ export default function App() {
     if (k === "about") {
       setAsk({
         text:
-          "快捷键：/ 搜索，Ctrl+1 书架，Ctrl+2 表格，Ctrl+3 书评，Ctrl+Shift+L 换主题，Esc 收面板。\n" +
+          "快捷键：/ 搜索，Ctrl+1 书架，Ctrl+2 表格，Ctrl+3 书评，Ctrl+4 阅读，Ctrl+Shift+L 换主题，Esc 收面板。\n" +
           "书库文件夹在 " +
           (dinfo?.dir || info?.libraryRoot || "") +
           "，书、封面、书评都在里面，安装包里不含任何书目。换机器整个拷走就行。\n" +
@@ -570,19 +571,26 @@ export default function App() {
           onChange={(e) => setQ(e.target.value)}
           placeholder={seriesMode ? "搜系列名（/ 聚焦）" : "搜书名、作者、原名（/ 聚焦）"}
         />
-        <div className="seg">
-          {MEDIA.map((m) => (
-            <button key={m} className={media === m ? "on" : ""} onClick={() => switchMedia(m)}>
-              {m}
-            </button>
-          ))}
-        </div>
+        {view === "read" ? (
+          <span className="dim rd-scope" title="时间线只算小说，漫画没有逐本阅读记录">
+            小说
+          </span>
+        ) : (
+          <div className="seg">
+            {MEDIA.map((m) => (
+              <button key={m} className={media === m ? "on" : ""} onClick={() => switchMedia(m)}>
+                {m}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="seg">
           {(
             [
               ["grid", "书架"],
               ["table", "表格"],
-              ["review", "书评"]
+              ["review", "书评"],
+              ["read", "阅读"]
             ] as const
           ).map(([k, label]) => (
             <button
@@ -603,7 +611,9 @@ export default function App() {
       </header>
 
       <div className="body">
-        {view === "review" ? (
+        {view === "read" ? (
+          <ReadView ver={tick} onPick={(id) => pickBook(id)} />
+        ) : view === "review" ? (
           <ReviewLib
             reviews={reviews}
             focusKey={reviewFocus}

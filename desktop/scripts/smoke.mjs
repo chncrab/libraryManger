@@ -160,7 +160,7 @@ const detailLabels = await js(`(() => {
 })()`);
 const headTexts = await js("[...document.querySelectorAll('.table thead th')].map(e => (e.textContent || '').trim())");
 /* 详情里一行放两个条目的，表格拆成两列 */
-const PAIR = { 系列: ["系列", "卷"], 已读: ["已读", "阅读日期"] };
+const PAIR = { 系列: ["系列", "卷"] };
 const headSet = new Set(headTexts.filter(Boolean));
 const detailSet = new Set(detailLabels.filter((l) => l !== "备注"));
 const pairMembers = new Set(Object.values(PAIR).flat());

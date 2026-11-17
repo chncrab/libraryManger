@@ -34,6 +34,8 @@ function builtinValues(f: FieldDef, b: BookRow): string[] {
       return b.isRead ? ["1"] : [];
     case "readDate":
       return one(b.readDate);
+    case "readStart":
+      return one(b.readStart);
     case "rating":
       return b.rating == null || b.rating === 0 ? [] : [String(b.rating)];
     case "ebookState":

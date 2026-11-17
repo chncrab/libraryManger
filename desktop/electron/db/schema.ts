@@ -323,6 +323,19 @@ UPDATE series SET zh_name = '';
    撤销改成直接移除封面，这张表停用并删掉 */
 const V9 = `DROP TABLE IF EXISTS cover_history;`;
 
+/* v10 阅读时间拆成开始与结束两个。
+   原来那个字段装的是读完那天，这一版加开始那天，名字也改成结束时间，
+   两者并排放在已读后面。开始时间没填的书一律按当天读完处理，
+   读取的地方退回落结束那天，见 services/readService.ts。
+   已经在用的字段行要跟着改标签、把序号往后让一位，新字段正好落在两者之间 */
+const V10 = `
+ALTER TABLE books ADD COLUMN read_start TEXT NOT NULL DEFAULT '';
+UPDATE fields SET label = '阅读结束时间' WHERE key = 'readDate';
+UPDATE fields SET ord = ord + 1 WHERE ord >= 13;
+INSERT OR IGNORE INTO fields (key, label, type, builtin, col, patch_key, width, ord, in_table, searchable, filterable)
+VALUES ('readStart', '阅读开始时间', 'date', 1, 'read_start', 'readStart', 100, 13, 1, 0, 0);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "init", sql: V1 },
   { version: 2, name: "category_parent", sql: V2 },
@@ -333,5 +346,6 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, name: "cover_cache_and_queue", sql: V7 },
   /* 系列名有了译名，全文索引的 series 列要同时装两个名字，整库重灌一次 */
   { version: 8, name: "series_zh_name", sql: V8, after: (db) => rebuildAllFts(db) },
-  { version: 9, name: "drop_cover_history", sql: V9 }
+  { version: 9, name: "drop_cover_history", sql: V9 },
+  { version: 10, name: "read_start", sql: V10 }
 ];

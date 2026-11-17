@@ -56,6 +56,18 @@ env.BOOKLIB_ROOT = lib;
 env.BOOKLIB_FAKE_COVER = "1";
 env.BOOKLIB_COVER_GAP = "0";
 
+/* 端口被别的实例占着时，后面连上的是那一个，检查的也是它那份书库，
+   跑出来的结果全是别人的。先挡一道 */
+try {
+  const probe = await fetch(`http://127.0.0.1:${port}/json/version`);
+  if (probe.ok) {
+    console.log("端口 " + port + " 已被别的实例占着，先关掉它再跑");
+    process.exit(1);
+  }
+} catch {
+  /* 没起来就是干净的 */
+}
+
 console.log("起一个只跑封面的实例…");
 const child = spawn(
   electron,

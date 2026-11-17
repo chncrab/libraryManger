@@ -22,6 +22,7 @@ import {
   reviewFileName
 } from "./services/reviewService";
 import { listSeries, renameSeries, seriesBooks, seriesReviewOf } from "./services/seriesService";
+import { readTimeline, readStats } from "./services/readService";
 import {
   listFields,
   createField,
@@ -701,6 +702,9 @@ function registerIpc(): void {
     }
     return r;
   });
+  /* 阅读时间线与日历，只读。两屏共用同一次取回，界面切排布不重取 */
+  ipcMain.handle("read:timeline", (_e, media?: string) => readTimeline(D(), media || ""));
+  ipcMain.handle("read:stats", (_e, media?: string) => readStats(D(), media || ""));
   ipcMain.handle("reviews:list", () => listReviews(D()));
   /* 单篇导出用同一个命名规则，界面别自己拼文件名，否则和落盘那份对不上 */
   ipcMain.handle("reviews:fileName", (_e, kind: string, id: number) => reviewFileName(D(), { kind, id }));

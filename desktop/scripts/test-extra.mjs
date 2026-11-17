@@ -656,9 +656,9 @@ const fsv = require("../dist-electron/electron/services/fieldService.js");
 const defs = fsv.listFields(db);
 const builtinKeys = [
   "grade", "title", "subtitle", "originalTitle", "originalSubtitle", "authors", "media", "series",
-  "index", "country", "publishDate", "read", "readDate", "rating", "categories", "states", "ebook", "note"
+  "index", "country", "publishDate", "read", "readStart", "readDate", "rating", "categories", "states", "ebook", "note"
 ];
-t("十八个内建字段都登记了", builtinKeys.every((k) => defs.some((d) => d.key === k)), defs.length + " 个");
+t("十九个内建字段都登记了", builtinKeys.every((k) => defs.some((d) => d.key === k)), defs.length + " 个");
 t("内建字段的类型对得上", defs.find((d) => d.key === "publishDate").type === "date" && defs.find((d) => d.key === "read").type === "switch");
 t("内建字段不许改类型", fsv.changeFieldType(db, defs.find((d) => d.key === "title").id, "number").ok === false);
 t("内建字段不许删", fsv.removeField(db, defs.find((d) => d.key === "title").id).ok === false);

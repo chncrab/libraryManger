@@ -13,13 +13,14 @@ const ORDER_COL: Record<string, string> = {
   index: "b.series_index",
   rating: "b.rating",
   read: "b.read_date",
+  readStart: "b.read_start",
   year: "b.publish_year",
   updated: "b.updated_at",
   grade:
     "CASE (SELECT r.grade FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL) WHEN 'god' THEN 0 WHEN 'normal' THEN 1 WHEN 'bad' THEN 2 ELSE 3 END"
 };
 
-const NULL_LAST = new Set(["rating", "read", "year", "index", "grade"]);
+const NULL_LAST = new Set(["rating", "read", "readStart", "year", "index", "grade"]);
 
 /** 自定义字段排序时用的表达式。值表按字段 id 取，id 来自库里不是用户输入 */
 function customOrderExpr(db: DB, key: string, dir: number): string {
@@ -51,7 +52,7 @@ export function orderBy(db: DB, sorts?: SortSpec[]): string {
 const SELECT_ROW = `
 SELECT b.id, b.title, b.subtitle, b.original_title, b.original_subtitle, b.media_type,
        b.series_id, b.series_index, b.country, b.is_mystery, b.publish_date, b.publish_year,
-       b.is_read, b.read_date, b.rating, b.ebook_state, b.note, b.cover_file, b.updated_at,
+       b.is_read, b.read_start, b.read_date, b.rating, b.ebook_state, b.note, b.cover_file, b.updated_at,
        s.name AS series_name, s.zh_name AS series_zh,
        (SELECT group_concat(a.name, '、') FROM book_authors ba JOIN authors a ON a.id = ba.author_id
           WHERE ba.book_id = b.id) AS authors_text,
@@ -84,6 +85,7 @@ function toRow(r: any): BookRow {
     publishYear: r.publish_year,
     isRead: !!r.is_read,
     readDate: r.read_date,
+    readStart: r.read_start,
     rating: r.rating,
     ebookState: r.ebook_state,
     note: r.note,
