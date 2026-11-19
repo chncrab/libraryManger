@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { coverUrl } from "../api";
-import { dayLabel, dayNum, navFrac, navX, ticks, yearBands, type Scale } from "../../shared/readScale";
+import { dayLabel, dayNum, navMarks, ticks, type NavRange, type Scale, type YearBand } from "../../shared/readScale";
 import type { ReadEntry } from "../../shared/types";
 import ReadTip, { type TipAnchor } from "./ReadTip";
 import ReadNav, { type ReadNavHandle } from "./ReadNav";
@@ -27,6 +27,10 @@ interface Props {
   list: ReadEntry[];
   /** 与竖排同一份换算，两边落点才一致 */
   sc: Scale;
+  /** 年份分段，与竖排共用一份 */
+  bands: YearBand[];
+  /** 导航条铺开的那一段，选了显示区间就只铺那几年 */
+  navRange: NavRange;
   onPick: (id: string) => void;
 }
 
@@ -100,18 +104,24 @@ function layout(list: ReadEntry[], sc: Scale) {
     edge[lane] = x + need;
     alt = 1 - lane;
   }
-  return { nodes, width: Math.max(edge[0], edge[1]) + PAD };
+  /* 末尾推到今天：最后一本书之后那段日子轴也照画，不提前断掉。
+     content 是最后一本书那一头的世界坐标，开场落在它上面，空尾巴留着往后拖 */
+  const content = Math.max(edge[0], edge[1]) + PAD;
+  return { nodes, width: Math.max(content, sc.width + PAD), content };
 }
 
-export default function ReadAxis({ list, sc, onPick }: Props) {
+export default function ReadAxis({ list, sc, bands, navRange, onPick }: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
   const navRef = useRef<ReadNavHandle | null>(null);
 
-  const { nodes, width } = useMemo(() => layout(list, sc), [list, sc]);
-  /* 导航条按年等分，一年一格，格里的柱子是那年读完几本 */
-  const bands = useMemo(() => yearBands(list.map((e) => e.anchor), sc), [list, sc]);
+  const { nodes, width, content } = useMemo(() => layout(list, sc), [list, sc]);
+  /* 导航条：条铺 navRange 那一段，每本书一根金线 */
+  const marks = useMemo(() => navMarks(list, sc, navRange), [list, sc, navRange]);
+  /** 月份宽度：条上滚轮一次翻一年，得靠它算 */
+  const monthWRef = useRef(sc.monthW);
+  monthWRef.current = sc.monthW;
 
   /** 现在画着的（k, off）与要去的（k, off），每帧后者朝前者靠 */
   const camRef = useRef({ k: 1, off: 0 });
@@ -124,6 +134,8 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
   const glideRef = useRef(0);
   const widthRef = useRef(width);
   widthRef.current = width;
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
   /* 刻度只算看得见的那一段，一千多个日刻度不必都挂进 DOM。
      这段区间跟着平移走，攒够一定距离才更新一次，免得每帧都重排 React */
@@ -179,19 +191,20 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
     const wrapH = host.parentElement?.clientHeight || host.clientHeight;
     const room = Math.max(0.6, wrapH / (2 * V_ROOM + 24));
     const v = Math.min(V_MAX, c.k, room);
-    host.style.setProperty("--k", c.k.toFixed(4));
+    /* 小数点后留六位：轴长二十多万像素，只留四位的话末位一到，右边的封面
+       就会被推十几像素，缩放时光标锚定对不上 */
+    host.style.setProperty("--k", c.k.toFixed(6));
     /* 字号跟封面按小台阶走，平移时不至于每帧都重排文字 */
     host.style.setProperty("--v", String(Math.round(v * 40) / 40));
     rail.style.transform = `translate3d(${-c.off}px,0,0)`;
     host.classList.toggle("k-sm", v < 0.62);
 
-    /* 滑块就是现在看得见的这一段，按年等分那条尺子反算 */
+    /* 滑块就是现在看得见的这一段：左沿与宽窄都是整条轴的分位，条铺满全轴，
+       于是缩得越远框越宽，与倍数严格一一对应 */
     const vw = host.clientWidth;
-    navRef.current?.setWindow(
-      navFrac(bands, c.off / c.k),
-      navFrac(bands, (c.off + vw) / c.k),
-      navFrac(bands, (c.off + vw / 2) / c.k)
-    );
+    const vx0 = c.off / c.k;
+    const vx1 = (c.off + vw) / c.k;
+    navRef.current?.setView(vx0, vx1);
 
     const w = host.clientWidth;
     const x0 = (c.off - 300) / c.k;
@@ -275,12 +288,14 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
     glideRef.current = requestAnimationFrame(step);
   };
 
-  /* 开场落在最右，最近读的先看见，更早的用年份按钮或导航条过去 */
+  /* 开场落在最右，最近读的先看见，更早的用导航条过去。
+     轴一直铺到今天，最后一本书之后还有几个月的空档，所以落点是书那一头，
+     不是轴的尽头 —— 否则一进来就是一屏空白 */
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let lastW = host.clientWidth;
-    const off = Math.max(0, widthRef.current - lastW);
+    const off = Math.max(0, Math.min(widthRef.current, contentRef.current) - lastW);
     camRef.current = { k: 1, off };
     tgtRef.current = { k: 1, off };
     kick();
@@ -294,6 +309,18 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
     ro.observe(host);
     return () => ro.disconnect();
   }, [width, clampOff, schedule, kick]);
+
+  /* 换了显示区间，视野要是落在区间外头就挪进去 —— 否则条上的滑块贴在边上，
+     看着像没反应。已经在区间里就不动，别打断手头的拖动 */
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !host.clientWidth) return;
+    const c = camRef.current;
+    const vx0 = c.off / c.k;
+    const vx1 = (c.off + host.clientWidth) / c.k;
+    if (vx1 > navRange.a && vx0 < navRange.b) return;
+    jumpTo(((navRange.a + navRange.b) / 2) * c.k - host.clientWidth / 2);
+  }, [navRange.a, navRange.b, jumpTo]);
 
   useEffect(
     () => () => {
@@ -315,6 +342,14 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
       ev.preventDefault();
       stopGlide();
       const t = tgtRef.current;
+      /* 滚在导航条上就是翻年份：一路平着走，不缩放。一次滚轮约走一年 ——
+         铺的是全轴，条上一像素跨着几天，按条长算就滚不动了 */
+      if ((ev.target as HTMLElement | null)?.closest?.(".rd-nav")) {
+        const d = (12 * monthWRef.current) / 120;
+        zoomRef.current = null;
+        jumpTo(t.off + (ev.deltaY + ev.deltaX) * d);
+        return;
+      }
       if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {
         zoomRef.current = null;
         jumpTo(t.off + ev.deltaX);
@@ -409,12 +444,12 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
     schedule();
   };
 
-  /** 拖导航条：把那一带挪到视口正中。手直接拖的，不用等动画 */
-  const seekFrac = (p: number) => {
+  /** 拖导航条：把那个世界坐标摆到视野正中。手直接拖的，不用等动画 */
+  const seekFrac = (x: number) => {
     const host = hostRef.current;
     if (!host) return;
     stopGlide();
-    jumpTo(navX(bands, p) * tgtRef.current.k - host.clientWidth / 2);
+    jumpTo(x * tgtRef.current.k - host.clientWidth / 2);
   };
 
   /* 上轨的卡往上放、下轨往下放，都在封面外侧，不压住正在看的那本。
@@ -444,7 +479,7 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
       onPointerCancel={onUp}
       onDoubleClick={onDbl}
     >
-      <ReadNav ref={navRef} bands={bands} onSeek={seekFrac} />
+      <ReadNav ref={navRef} bands={bands} marks={marks} range={navRange} onSeek={seekFrac} />
 
       <div className="rd-axis" ref={hostRef}>
         <div className="rd-rail" ref={railRef}>
@@ -452,10 +487,16 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
           {tk.map((t) => (
             <div
               key={t.kind + "-" + t.x.toFixed(1)}
-              className={"rd-tk " + t.kind + (t.sun ? " sun" : "")}
+              className={"rd-tk " + t.kind}
               style={{ ["--wx" as never]: t.x, ["--ww" as never]: t.w }}
             >
-              {t.label ? <span>{t.label}</span> : null}
+              {t.label ? (
+                <span>
+                  {t.label}
+                  {/* 年份后面跟一支箭头，指着这一年往下走的那一边 */}
+                  {t.kind === "year" ? <i className="rd-yarw" /> : null}
+                </span>
+              ) : null}
             </div>
           ))}
           {shown.map((n) => (
@@ -479,8 +520,8 @@ export default function ReadAxis({ list, sc, onPick }: Props) {
                 )}
                 {/* 书名挂在封面外侧，远离轴的那一边，两轨各挂各的 */}
                 <span className="rd-t">{n.e.title}</span>
-                {/* 金线两头的日号：开始那天在左头，读完那天在右头 */}
-                {n.span ? <span className="rd-d0">{n.d0}</span> : null}
+                {/* 金线两头的日期：开始那天在左头，读完那天在右头，都写成 月-日 */}
+                <span className="rd-d0">{n.d0}</span>
                 <span className="rd-d1">{n.d1}</span>
               </div>
             </div>

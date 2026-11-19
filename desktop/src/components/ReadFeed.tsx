@@ -1,6 +1,6 @@
 import { coverUrl } from "../api";
 import { gradeIcon, ratingText } from "./GridView";
-import { dayLabel, dayNum, navFrac, navX, ticks, yearBands, type Scale } from "../../shared/readScale";
+import { dayLabel, dayNum, navMarks, ticks, type NavRange, type Scale, type YearBand } from "../../shared/readScale";
 import type { ReadEntry } from "../../shared/types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReadTip, { type TipAnchor } from "./ReadTip";
@@ -14,8 +14,8 @@ import ReadNav, { type ReadNavHandle } from "./ReadNav";
  * 再沿着轴往下漫到读完那天，当天读完的以那天为中心上下各盖半个日格。
  * 同时光标旁浮出一张写着起止、用时与评分的小卡。
  * 整条是一条瀑布，不按年折叠，最右边竖着一条按年等分的总览，拖着它跨年。
- * 右边那条要占地方，内容整体让出 34px，轴于是落在窗口正中偏左一点，
- * 免得最右那列书名被总览压住。
+ * 右边那条要占地方，内容整体让出 46px（条二十六、条左边那列年份字二十），
+ * 轴于是落在窗口正中偏左一点，免得最右那列书名被总览压住。
  *
  * Ctrl + 滚轮缩放整屏，光标那一点不动。缩放走 transform，外面另套一层
  * 按缩放撑开的盒子，滚动条才认得实际长度。倍数不打 React 的 state：
@@ -32,6 +32,10 @@ import ReadNav, { type ReadNavHandle } from "./ReadNav";
 interface Props {
   list: ReadEntry[];
   sc: Scale;
+  /** 年份分段，与横排共用一份 */
+  bands: YearBand[];
+  /** 导航条铺开的那一段，选了显示区间就只铺那几年 */
+  navRange: NavRange;
   onPick: (id: string) => void;
 }
 
@@ -109,16 +113,19 @@ function rows(list: ReadEntry[], sc: Scale) {
     edge[col] = y + MINSEP;
     alt = 1 - col;
   }
-  return { rows: out, height: Math.max(edge[0], edge[1]) + 48 };
+  /* 末尾推到今天：最后一本书之后那段日子轴也照画，不提前断掉。
+     content 是最后一本书那一头，开场落在它上面，空尾巴留着往下滚 */
+  const content = Math.max(edge[0], edge[1]) + 48;
+  return { rows: out, height: Math.max(content, sc.width + 48), content };
 }
 
-export default function ReadFeed({ list, sc, onPick }: Props) {
-  const { rows: items, height } = useMemo(() => rows(list, sc), [list, sc]);
-  /* 导航条按年等分，一年一格，格里的柱子是那年读完几本 */
-  const bands = useMemo(() => yearBands(list.map((e) => e.anchor), sc), [list, sc]);
-  /** 量可见段那个 effect 只跑一次，bands 得走 ref 才拿得到新的 */
-  const bandsRef = useRef(bands);
-  bandsRef.current = bands;
+export default function ReadFeed({ list, sc, bands, navRange, onPick }: Props) {
+  const { rows: items, height, content } = useMemo(() => rows(list, sc), [list, sc]);
+  /* 导航条：条铺 navRange 那一段，每本书一根金线 */
+  const marks = useMemo(() => navMarks(list, sc, navRange), [list, sc, navRange]);
+  /** 量可见段那个 effect 只跑一次，换算层得走 ref 才拿得到新的 */
+  const scRef = useRef(sc);
+  scRef.current = sc;
   const navRef = useRef<ReadNavHandle | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef<HTMLDivElement | null>(null);
@@ -133,6 +140,8 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
   const anchor = useRef<{ wy: number; py: number } | null>(null);
   const hRef = useRef(height);
   hRef.current = height;
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
   /* 现在看得见的一段（世界坐标）与当下的缩放档位。只有它变了才重挂条目与刻度 */
   const [win, setWin] = useState({ y0: 0, y1: 0, z: 1 });
@@ -163,6 +172,13 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
     const fit = Math.max(1, (scale.clientWidth || W) / W);
     inner.style.setProperty("--vi", (Math.min(fit, z) / z).toFixed(4));
     inner.style.setProperty("--zi", (1 / Math.max(1, z)).toFixed(4));
+    /* 年线横贯整屏、年份字贴着左边框：两个都按世界坐标反算，
+       屏幕上位置固定，缩放时不会往中间跑。字号另外按 1/z 抵回去，
+       缩到三成时也不至于成为一粒看不见的灰 */
+    const edge = -Math.max(0, (scale.clientWidth || W) / 2 - 46) / z;
+    inner.style.setProperty("--edge", edge.toFixed(1));
+    inner.style.setProperty("--edgew", (-edge * 2).toFixed(1));
+    inner.style.setProperty("--zy", (1 / Math.max(0.5, z)).toFixed(4));
     inner.style.transform = `translateX(-50%) scale(${z})`;
     scale.style.height = hRef.current * z + "px";
     const box = boxOf();
@@ -176,10 +192,12 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
     if (!rafZ.current) rafZ.current = requestAnimationFrame(() => drawZRef.current());
   };
 
-  /* 开场落在最下面，最近读的先看见，往回翻才是一年一年往前 */
+  /* 开场落在最下面，最近读的先看见，往回翻才是一年一年往前。
+     轴一直铺到今天，最后一本书之后还有几个月的空档，所以落点是书那一头，
+     不是轴的尽头 —— 否则一进来就是一屏空白 */
   useEffect(() => {
     const box = boxOf();
-    if (box) box.scrollTop = box.scrollHeight;
+    if (box) box.scrollTop = Math.max(0, Math.min(box.scrollHeight, contentRef.current) - box.clientHeight);
     return () => {
       if (rafZ.current) cancelAnimationFrame(rafZ.current);
       /* id 得一起清掉：StrictMode 下撤销之后还要再跑一遍，留着旧 id 的话
@@ -188,8 +206,20 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
     };
   }, []);
 
+  /* 换了显示区间，视野落在区间外就滚进去 —— 否则右边那条滑块贴在端上，看着像
+     没反应。已经在区间里就不动，别打断手头的滚动 */
+  useEffect(() => {
+    const box = boxOf();
+    if (!box) return;
+    const z = zCam.current || 1;
+    const y0 = box.scrollTop / z;
+    const y1 = (box.scrollTop + box.clientHeight) / z;
+    if (y1 > navRange.a && y0 < navRange.b) return;
+    box.scrollTop = Math.max(0, ((navRange.a + navRange.b) / 2) * z - box.clientHeight / 2);
+  }, [navRange.a, navRange.b]);
+
   /* 窗口变宽变窄，「刚好铺满」的那一档封顶跟着变，得重算一次；
-     右边那条导航占掉的 34px 也在这个宽度里，窗口一动它就得重新让位 */
+     右边那条导航占掉的 46px 也在这个宽度里，窗口一动它就得重新让位 */
   useEffect(() => {
     const el = scaleRef.current;
     if (!el) return;
@@ -212,12 +242,8 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
       const r = el.getBoundingClientRect();
       const y0 = (b.top - r.top) / z;
       const y1 = y0 + box.clientHeight / z;
-      /* 滑块跟着走：看得见的那一段压在导航条的哪一截 */
-      navRef.current?.setWindow(
-        navFrac(bandsRef.current, box.scrollTop / z),
-        navFrac(bandsRef.current, (box.scrollTop + box.clientHeight) / z),
-        navFrac(bandsRef.current, (box.scrollTop + box.clientHeight / 2) / z)
-      );
+      /* 滑块跟着走：左沿与长短都是整条轴的分位，条铺满全轴，缩得越远框越长 */
+      navRef.current?.setView(y0, y1);
       const zq = Math.round(z * 10) / 10;
       setWin((p) => {
         const slack = Math.max(160, (p.y1 - p.y0) * 0.5);
@@ -240,11 +266,21 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
     const wrap = rootRef.current;
     if (!wrap) return;
     const onWheel = (ev: WheelEvent) => {
+      const box = boxOf();
+      if (!box) return;
+      /* 滚在导航条上就是翻年份：一路平着走，不缩放。一次约走一年 ——
+         铺的是全轴，条上一像素跨着几天，按条长算就滚不动了 */
+      if ((ev.target as HTMLElement | null)?.closest?.(".rd-nav")) {
+        if (ev.ctrlKey || ev.metaKey) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const d = ((12 * scRef.current.monthW) / 120) * (ev.deltaY + ev.deltaX);
+        box.scrollTop = Math.max(0, Math.min(box.scrollHeight, box.scrollTop + d * zCam.current));
+        return;
+      }
       if (!ev.ctrlKey && !ev.metaKey) return;
       ev.preventDefault();
       ev.stopPropagation();
-      const box = boxOf();
-      if (!box) return;
       const z = zCam.current;
       const nz = Math.min(Z_MAX, Math.max(Z_MIN, Math.round(z * Math.exp(-ev.deltaY * 0.0018) * 40) / 40));
       if (nz === zTgt.current) return;
@@ -258,11 +294,11 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
     return () => wrap.removeEventListener("wheel", onWheel);
   }, []);
 
-  /** 拖导航条：把那一带挪到视口正中。手直接拖的，不用平滑滚动 */
-  const seekFrac = (p: number) => {
+  /** 拖导航条：把那个世界坐标摆到视野正中。手直接拖的，不用平滑滚动 */
+  const seekFrac = (x: number) => {
     const box = boxOf();
     if (!box) return;
-    box.scrollTop = Math.max(0, navX(bands, p) * zCam.current - box.clientHeight / 2);
+    box.scrollTop = Math.max(0, x * zCam.current - box.clientHeight / 2);
   };
 
   /* 只挂看得见的那几条 */
@@ -298,20 +334,26 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
   return (
     <div className="rvwrap" ref={rootRef}>
       <div className="rv-navslot">
-        <ReadNav ref={navRef} bands={bands} onSeek={seekFrac} vertical />
+        <ReadNav ref={navRef} bands={bands} marks={marks} range={navRange} onSeek={seekFrac} vertical />
       </div>
 
-      <div className="rv-scale" ref={scaleRef} style={{ width: "calc(100% - 34px)", height }}>
+      <div className="rv-scale" ref={scaleRef} style={{ width: "calc(100% - 46px)", height }}>
         <div className="rv" ref={innerRef} style={{ height, width: W, transform: "translateX(-50%) scale(1)" }}>
           <div className="rv-axis" style={{ left: AX }}>
             {/* 轴上不标日号，星期天那根加粗；起止那两天标在金线两头 */}
             {tks.map((t) => (
               <div
                 key={t.kind + "-" + t.x.toFixed(1)}
-                className={"rv-tk " + t.kind + (t.sun ? " sun" : "")}
+                className={"rv-tk " + t.kind}
                 style={{ top: t.x, ["--ww" as never]: t.w }}
               >
-                {t.label ? <span>{t.label}</span> : null}
+                {t.label ? (
+                  <span>
+                    {t.label}
+                    {/* 年份后面跟一支箭头，指着这一年往下走的那一边 */}
+                    {t.kind === "year" ? <i className="rv-yarw" /> : null}
+                  </span>
+                ) : null}
               </div>
             ))}
           </div>
@@ -330,18 +372,13 @@ export default function ReadFeed({ list, sc, onPick }: Props) {
               {/* 先一根细线从封面横到轴上，再沿着轴漫开，盖住读的那几天 */}
               <i className="rv-probe" />
               <i className="rv-run" style={{ top: r.barTop, height: r.barH }} />
-              {/* 金线两头的日号：开始那天在上、读完那天在下。条太短时只留一个，
-                  上下两个会挤成一坨 */}
-              {r.span && r.barH >= 26 ? (
-                <span className="rv-d0" style={{ top: r.barTop }}>
-                  {r.d0}
-                </span>
-              ) : null}
-              {r.span ? (
-                <span className="rv-d1" style={{ top: r.barTop + r.barH }}>
-                  {r.d1}
-                </span>
-              ) : null}
+              {/* 金线两头的日期：开始那天在上、读完那天在下，都写成 月-日 */}
+              <span className="rv-d0" style={{ top: r.barTop }}>
+                {r.d0}
+              </span>
+              <span className="rv-d1" style={{ top: r.barTop + r.barH }}>
+                {r.d1}
+              </span>
               <div className="rv-body">
                 <div className="rv-cov">
                   {r.e.cover ? (
