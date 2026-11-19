@@ -1,6 +1,6 @@
 {
   "name": "booklib",
-  "version": "0.2.0",
+  "version": "0.2.0a",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "私人藏书管理",
