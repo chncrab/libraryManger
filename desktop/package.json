@@ -20,8 +20,8 @@
     "smoke:series": "node scripts/smoke-series.mjs",
     "smoke:read": "node scripts/smoke-read.mjs",
     "test:scale": "node scripts/test-scale.mjs",
-    "dist": "npm run build && node scripts/clean-dist-log.mjs && electron-builder --win nsis zip",
-    "dist:dir": "npm run build && node scripts/clean-dist-log.mjs && electron-builder --dir"
+    "dist": "npm run build && node scripts/clean-dist-log.mjs && node node_modules/electron-builder/cli.js --win nsis zip",
+    "dist:dir": "npm run build && node scripts/clean-dist-log.mjs && node node_modules/electron-builder/cli.js --dir"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
