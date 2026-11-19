@@ -1,7 +1,13 @@
 /*
  * 只跑阅读时间线这一屏的冒烟。动时间线、阅读起止、阅读视图时用它。
  * 自己起一个 electron 实例，用书库副本，跑完收掉。
- * 用法：node scripts/smoke-read.mjs（npm run smoke:read）
+ *
+ * 分两段，改到哪一段就只跑哪一段：
+ *   npm run smoke:read -- v     竖排
+ *   npm run smoke:read -- h     横排
+ *   npm run smoke:read          两段都跑
+ * 默认只打失败的断言与段落汇总，要看逐条加 -v：
+ *   npm run smoke:read -- -v v
  */
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -70,7 +76,18 @@ try {
 console.log("起一个只跑阅读时间线的实例…");
 const child = spawn(
   electron,
-  [".", "--user-data-dir=" + userData, "--remote-debugging-port=" + port, "--disable-gpu", "--in-process-gpu"],
+  /* 这台机器上窗口被挡就冻页面：CDP 的 evaluate 发出去不回包，整个脚本干等。
+     关掉遮挡退化、关掉后台节流，再把页面钉在 active，才不用靠窗口在最前面 */
+  [
+    ".",
+    "--user-data-dir=" + userData,
+    "--remote-debugging-port=" + port,
+    "--disable-gpu",
+    "--in-process-gpu",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling"
+  ],
   { cwd: root, env, stdio: "ignore" }
 );
 
@@ -115,6 +132,18 @@ const keyDown = async (k, ctrl) => {
 
 let ok = 0;
 let bad = 0;
+/* 改到哪一块就只验哪一块：整条链两段跑完要几分钟，回回跑全程没必要。
+     node scripts/smoke-read.mjs v      只验竖排
+     node scripts/smoke-read.mjs h      只验横排
+     node scripts/smoke-read.mjs        两段都跑
+   成功的断言不再逐条打，只报段落汇总；要看全量加 -v */
+const ARGS = process.argv.slice(2);
+const verbose = ARGS.includes("-v");
+const ONLY = (ARGS.find((a) => !a.startsWith("-")) || "").split(",").filter(Boolean);
+const want = (seg) => !ONLY.length || ONLY.includes("all") || ONLY.includes(seg);
+/** 当下验的是哪一段，只用来归拢失败与汇总 */
+let seg = "前置";
+const segStat = new Map();
 /* 望着某个值到目标再断言：过渡、重挂、量测各有各的节拍，死等一个固定毫秒数不牢 */
 const waitFor = async (fn, good, tries = 14, gap = 120) => {
   let v = await fn();
@@ -125,13 +154,17 @@ const waitFor = async (fn, good, tries = 14, gap = 120) => {
   return v;
 };
 const check = (name, cond, extra = "") => {
+  const s = segStat.get(seg) || { ok: 0, bad: 0 };
   if (cond) {
     ok++;
-    console.log("PASS " + name + (extra ? "  " + extra : ""));
+    s.ok++;
+    if (verbose) console.log("PASS " + name + (extra ? "  " + extra : ""));
   } else {
     bad++;
+    s.bad++;
     console.log("FAIL " + name + (extra ? "  " + extra : ""));
   }
+  segStat.set(seg, s);
 };
 
 /* 等实例起来，连上调试端口 */
@@ -163,6 +196,10 @@ ws.addEventListener("message", (ev) => {
   else p.resolve(msg.result);
 });
 await call("Runtime.enable");
+/* 窗口被别的窗口压住时页面会进 frozen，evaluate 就永远不回包 */
+await call("Emulation.setFocusEmulationEnabled", { enabled: true });
+await call("Page.enable");
+await call("Page.setWebLifecycleState", { state: "active" });
 
 /* 首屏数据落地 */
 for (let i = 0; i < 40; i++) {
@@ -176,13 +213,16 @@ const stats = JSON.parse(await js("(async () => JSON.stringify(await window.api.
 check("样本库有阅读时间线可取", timeline.length > 0 && stats.total === timeline.length, timeline.length + " 条");
 const spans = timeline.filter((e) => e.span).length;
 
-/* 一屏只装得下一个多月（一个月一格，全轴按最满的那个月定宽），最近的月份常只有
-   一两本。要验金线、日号、两轨那些，先算清轴上的坐标，把视口挪到读得最多的那个
-   月 —— 那里一屏铺得满，断言才有东西可验。算的是同一份换算，与服务层无关 */
+/* 一屏只装得下一个月左右（所有年所有月一样宽，格宽按最满的那个月定），最近的月份
+   常只有一两本。要验金线、日期、两轨那些，先算清轴上的坐标，把视口挪到读得最多的
+   那个月 —— 那里一屏铺得满，断言才有东西可验。算的是同一份换算，与服务层无关 */
 const R = require("../dist-electron/shared/readScale.js");
+const nowD = new Date();
+const todayKey = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}-${String(nowD.getDate()).padStart(2, "0")}`;
 const midDays = timeline.map((e) => R.midDay(e));
 const midOf = new Map(timeline.map((e) => [e.id, R.midDay(e)]));
-const scCalc = R.buildScale(midDays);
+/* 界面那边轴一直铺到今天，这里传同一个尽头，坐标才对得上 */
+const scCalc = R.buildScale(midDays, { until: R.dayNum(todayKey) });
 const perMonth = new Map();
 for (const d of midDays) {
   const k = R.dayStr(d).slice(0, 7);
@@ -193,8 +233,24 @@ const busyX = scCalc.xOf(R.dayNum(busiest[0] + "-01"));
 const janKey = [...perMonth.keys()].filter((k) => k.endsWith("-01")).sort()[0];
 const janX = janKey ? scCalc.xOf(R.dayNum(janKey)) : busyX;
 const calcBands = R.yearBands(timeline.map((e) => e.anchor), scCalc);
-const busyP = R.navFrac(calcBands, busyX + scCalc.monthW * 0.5);
 const toDay = (x) => js(`(() => { const s = document.querySelector('.scroll'); s.scrollTop = ${Math.round(x)}; return Math.round(s.scrollTop); })()`);
+
+/* 条铺的是一段固定的世界坐标（默认就是最早那本那年到今年），一个世界坐标落在条上的
+   哪一分位跟视野无关，所以这把尺子在拖动前后始终是同一把 */
+const navR = R.yearRange(scCalc, Number(R.dayStr(scCalc.first).slice(0, 4)), nowD.getFullYear());
+const barP = (x, total) => (x - navR.a) / Math.max(1, total);
+const barX = (p, total) => navR.a + p * Math.max(1, total);
+/* 条上那个滑块：左沿与宽，都是整条轴的百分比。滑块中心对应的世界坐标就是
+   视野中心 —— 拖到哪儿、内容到哪儿，验落点全看它 */
+const thumbOf = async (sel, vert = false) =>
+  JSON.parse(
+    await js(
+      `JSON.stringify((() => { const t = document.querySelector('${sel} .rd-nav-thumb'); if (!t) return null;` +
+        ` return { l: parseFloat(t.style.${vert ? "top" : "left"}) || 0,` +
+        ` w: parseFloat(t.style.${vert ? "height" : "width"}) || 0 }; })())`
+    )
+  );
+const thumbCenter = (th, total) => ((th.l + th.w / 2) / 100) * total;
 
 /* 缩放是不是滑过去的，外部轮询测不出来 —— CDP 一次往返就一百多毫秒，
    等打到页面时动画已经走完七成。改成页面里每帧记一笔，跑完读回整条曲线 */
@@ -223,8 +279,41 @@ check("进来之后停在竖排这一屏", (await js("document.querySelectorAll(
 await toDay(busyX - 60);
 await wait(900);
 
+/* 公共：两段都要用的年份统计、导航条读数与离线算的那份书线位置，谁先跑谁先建好 */
+/* 右边那条总览：条上每本书一根金线，落在它在轴上的位置；年界线一年一道。
+   年份按钮那一排撤了，改成拖着这条跨年，拖的时候浮出最近那本书的名字与日期 */
+const yAll = [...new Set(timeline.map((e) => Number(String(e.anchor).slice(0, 4))))].filter((y) => y > 1900);
+const yLo = Math.min(...yAll);
+const yHi = Math.max(...yAll);
+const bandN = yHi - yLo + 1;
+/* 界面上那条线的位置在 shared/readScale 里算，这里用同一份函数复算一遍来对 */
+const calcMarks = R.navMarks(timeline, scCalc, navR);
+const navBooks = async (sel) =>
+  JSON.parse(
+    await js(`JSON.stringify([...document.querySelectorAll('${sel} .rd-nav-book')].map((b) => ({
+      id: b.dataset.id, p: parseFloat(b.dataset.p)
+    })))`)
+  );
+const navLines = async (sel, vert = false) =>
+  JSON.parse(
+    await js(
+      `JSON.stringify([...document.querySelectorAll('${sel} .rd-nav-line')].map((b) => parseFloat(b.style.${vert ? "top" : "left"})))`
+    )
+  );
+/* 气泡里写的是「书名 · 月-日」，或者空档处的「哪一年 · 几本」 */
+const bubOf = async (sel) =>
+  JSON.parse(
+    await js(`JSON.stringify((() => { const b = document.querySelector('${sel} .rd-nav-bub'); return b ? { t: b.textContent.trim(), k: b.dataset.kind || '' } : null; })())`)
+  );
+const titleOf = (t) => {
+  const i = t.lastIndexOf(" · ");
+  return i > 0 ? t.slice(0, i) : "";
+};
+
 /* ---- 竖排 ---- */
+seg = "竖排";
 console.log("[竖排]");
+if (want("v")) {
 const rows = JSON.parse(
   await js(`(() => {
     const out = [...document.querySelectorAll('.rv-item')].map((n) => {
@@ -326,11 +415,19 @@ check(
   rows.every((r) => !/→|共\s*\d+\s*天/.test(r.m)),
   rows.find((r) => /→|共\s*\d+\s*天/.test(r.m))?.m || ""
 );
-const dayTxt = await js(
-  "JSON.stringify([...document.querySelectorAll('.rv-d0, .rv-d1')].map((n) => n.textContent.trim()))"
+/* 两头标的是 月-日，起的那头在上、读完的那头在下，每一条都标两头 */
+const dayTxt = JSON.parse(
+  await js(
+    "JSON.stringify({d:[...document.querySelectorAll('.rv-d0, .rv-d1')].map((n) => n.textContent.trim()),n:document.querySelectorAll('.rv-item').length})"
+  )
 );
-const dayNums = JSON.parse(dayTxt);
-check("竖排长条两头的日号只写数字", dayNums.length > 0 && dayNums.every((s) => /^\d{1,2}$/.test(s)), dayNums.slice(0, 6).join(" / "));
+const dayNums = dayTxt.d;
+check(
+  "竖排长条两头的日期写成 月-日",
+  dayNums.length > 0 && dayNums.every((s) => /^\d{2}-\d{2}$/.test(s)),
+  dayNums.slice(0, 6).join(" / ")
+);
+check("竖排每一条都标了起止两头", dayNums.length === dayTxt.n * 2, dayNums.length + " / " + dayTxt.n * 2);
 /* 条的长度是实打实的天数：单天读完只剩一格，最长那条拉得很长 */
 const oneDayIds = new Set(timeline.filter((e) => !e.span).map((e) => e.id));
 const single = rows.filter((r) => oneDayIds.has(r.id));
@@ -344,8 +441,8 @@ check(
   single.length + " 条，最大差 " + Math.max(...dayErrV).toFixed(1) + "px（最长 " + Math.max(...single.map((r) => r.bar)) + "px）"
 );
 check("跨度最长的那条明显更长", !!longRow && longRow.bar > 60, longRow ? longRow.bar + "px" : "");
-/* 长度是从日期换算里来的，跨天的条总比一格长。挤的地段被撑开、几年的大空档被
-   MAX_GAP 压过，所以这里只验方向，具体天数乘一格落在轴换算那头 */
+/* 长度是从日期换算里来的，跨天的条总比一格长。所有月份一样宽，格里的日子按当天
+   本数摊开，所以这里只验方向，具体天数乘一格落在轴换算那头 */
 const spanRows = rows.filter((r) => !oneDayIds.has(r.id));
 check(
   "跨天的条都比一格长",
@@ -358,6 +455,50 @@ await toDay(janX - 40);
 await wait(900);
 const vYears = await js("document.querySelectorAll('.rv-tk.year').length");
 check("竖轴挪到年初就有年刻度", vYears >= 1, vYears + " 个 · " + janKey);
+/* 年线是一条横贯整屏的淡线，位置在一月那道线上；年份写在它头上、贴着左边框，
+   后面跟一支朝下的箭头跨过线：「这道线之后的一年归它，往下走」 */
+const vYearLook = JSON.parse(
+  await js(`JSON.stringify((() => {
+    const t = document.querySelector('.rv-tk.year');
+    if (!t) return null;
+    const c = getComputedStyle(t, '::before');
+    const s = t.querySelector('span');
+    const a = t.querySelector('.rv-yarw');
+    const wrap = document.querySelector('.rv-scale').getBoundingClientRect();
+    const r = t.getBoundingClientRect();
+    const sr = s ? s.getBoundingClientRect() : null;
+    const ar = a ? a.getBoundingClientRect() : null;
+    return {
+      w: parseFloat(c.width),
+      h: parseFloat(c.height),
+      op: Number(c.opacity),
+      wrapL: Math.round(wrap.left),
+      wrapMid: Math.round((wrap.left + wrap.right) / 2),
+      tick: Math.round(r.top),
+      textL: sr ? Math.round(sr.left) : 0,
+      textBottom: sr ? Math.round(sr.bottom) : 0,
+      arW: ar ? Math.round(ar.width) : 0,
+      arH: ar ? Math.round(ar.height) : 0,
+      arTop: ar ? Math.round(ar.top) : 0,
+      arBottom: ar ? Math.round(ar.bottom) : 0
+    };
+  })())`)
+);
+check(
+  "年线横贯整屏，淡得只像背景",
+  !!vYearLook && vYearLook.op <= 0.32 && vYearLook.w > 500 && vYearLook.h <= 1.5,
+  vYearLook ? "线长 " + Math.round(vYearLook.w) + "px，粗 " + vYearLook.h + "，不透明度 " + vYearLook.op : "找不到年刻度"
+);
+check(
+  "年份贴着左边框，不压在轴上",
+  !!vYearLook && vYearLook.textL - vYearLook.wrapL <= 90 && vYearLook.wrapMid - vYearLook.textL > 100,
+  vYearLook ? "字离左边框 " + (vYearLook.textL - vYearLook.wrapL) + "px，离轴 " + (vYearLook.wrapMid - vYearLook.textL) + "px" : ""
+);
+check(
+  "年份写在年线上方，后面一支箭头朝下跨过线",
+  !!vYearLook && vYearLook.textBottom <= vYearLook.tick + 8 && vYearLook.arW <= 4 && vYearLook.arH >= 10 && vYearLook.arTop < vYearLook.tick && vYearLook.arBottom > vYearLook.tick,
+  vYearLook ? "字底差 " + (vYearLook.textBottom - vYearLook.tick) + "px，箭头 " + vYearLook.arW + "×" + vYearLook.arH + "，跨线 " + (vYearLook.arBottom - vYearLook.tick) + "px" : ""
+);
 await toDay(busyX - 60);
 await wait(900);
 const vMonths = await js("document.querySelectorAll('.rv-tk.month').length");
@@ -369,46 +510,64 @@ const vmStyle = JSON.parse(
   )
 );
 check("竖轴月刻度字大且加粗", !!vmStyle && vmStyle.fs >= 12 && vmStyle.fw >= 700, vmStyle ? vmStyle.fs + "px / " + vmStyle.fw : "");
-/* 右边那条总览：按年等分，一年一格，格里的柱子是那年读完几本。
-   年份按钮那一排撤了，改成拖着这条跨年，拖的时候浮出年份与本数。
-   竖着摆，所以「长度」是柱子的宽、「格子」是高度 */
-const yAll = [...new Set(timeline.map((e) => Number(String(e.anchor).slice(0, 4))))].filter((y) => y > 1900);
-const yLo = Math.min(...yAll);
-const yHi = Math.max(...yAll);
-const bandN = yHi - yLo + 1;
-const cntOf = new Map();
-for (const e of timeline) {
-  const y = Number(String(e.anchor).slice(0, 4));
-  cntOf.set(y, (cntOf.get(y) || 0) + 1);
-}
-const maxCnt = Math.max(...[...cntOf.values()]);
-const yearAtP = (p) => yLo + Math.min(bandN - 1, Math.floor(p * bandN));
-const navBars = async (sel, vert = false) =>
-  JSON.parse(
-    await js(`JSON.stringify([...document.querySelectorAll('${sel} .rd-nav-bar')].map((b) => ({
-      l: parseFloat(b.style.${vert ? "top" : "left"}), h: parseFloat(b.style.${vert ? "width" : "height"}), o: Number(b.style.opacity)
-    })))`)
-  );
-const navLines = async (sel, vert = false) =>
-  JSON.parse(
+
+const fbooks = await navBooks(".rv-navslot");
+check("竖排右边那条总览，每本书一根线", fbooks.length === timeline.length, fbooks.length + " 根 / " + timeline.length + " 本");
+/* 条左边竖着写年份，一年一个，点一下滚到那一年 */
+const fYears = JSON.parse(
+  await js("JSON.stringify([...document.querySelectorAll('.rv-navslot .rd-nav-year')].map((b) => +b.dataset.y))")
+);
+check(
+  "竖排那条左边按年写着年份",
+  fYears.length >= 3 && fYears.every((y, i) => i === 0 || fYears[i - 1] < y),
+  fYears.join(" ")
+);
+if (fYears.length) {
+  const fyBtn = JSON.parse(
     await js(
-      `JSON.stringify([...document.querySelectorAll('${sel} .rd-nav-line')].map((b) => parseFloat(b.style.${vert ? "top" : "left"})))`
+      `JSON.stringify((() => { const b = document.querySelector('.rv-navslot .rd-nav-year[data-y="${fYears[0]}"]').getBoundingClientRect(); return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }; })())`
     )
   );
-
-const fbars = await navBars(".rv-navslot", true);
-check("竖排右边也有那条总览，一年一格", fbars.length === bandN, fbars.length + " 格 / " + bandN + " 年");
+  const vTop0 = await js("document.querySelector('.scroll').scrollTop");
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: fyBtn.x, y: fyBtn.y, button: "none", buttons: 0 });
+  await wait(120);
+  await call("Input.dispatchMouseEvent", { type: "mousePressed", x: fyBtn.x, y: fyBtn.y, button: "left", buttons: 1, clickCount: 1 });
+  await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: fyBtn.x, y: fyBtn.y, button: "left", buttons: 0, clickCount: 1 });
+  await wait(900);
+  const vTop1 = await js("document.querySelector('.scroll').scrollTop");
+  check("点最早那个年份字，列表滚回那一年", vTop1 < vTop0 - 100, Math.round(vTop0) + " → " + Math.round(vTop1));
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 6, y: 300, button: "none", buttons: 0 });
+  await wait(250);
+  await toDay(busyX - 60);
+  await wait(800);
+}
+/* 条铺的那一段有多长：位置歪了，拖过去就落不到那本书 */
+const totalV = navR.b - navR.a;
+const fPos = JSON.parse(
+  await js("JSON.stringify([...document.querySelectorAll('.rv-navslot .rd-nav-book')].map((b) => parseFloat(b.style.top)))")
+);
+const fErr = fPos.map((v, i) => Math.abs(v - (calcMarks[i].x / totalV) * 100));
+check(
+  "竖排那条上线的位置与拖动反查对得上",
+  fPos.length === calcMarks.length && Math.max(...fErr) < 0.2,
+  "最偏 " + Math.max(...fErr).toFixed(3) + "%"
+);
+check(
+  "线从上往下按日期排开",
+  fPos.every((v, i) => i === 0 || fPos[i - 1] <= v + 1e-4),
+  fPos[0].toFixed(2) + "% → " + fPos[fPos.length - 1].toFixed(2) + "%"
+);
 const flines = await navLines(".rv-navslot", true);
-const fstep = 100 / bandN;
-const ferr = flines.map((v, i) => Math.abs(v - (i + 1) * fstep));
-check("竖排年界线等距，一年一道", flines.length === bandN - 1 && Math.max(...ferr) < 0.6, "最偏 " + Math.max(...ferr).toFixed(2) + "%");
-/* 柱子长度按平方根压过，一年只读一本的年份也留得下 2px，不然早年那几格等于没有 */
-const barH = (n) => (n ? Math.max(2, Math.round(18 * Math.sqrt(n / maxCnt))) : 0);
-const fhErr = fbars.map((b, i) => Math.abs(b.h - barH(cntOf.get(yLo + i) || 0)));
-check("柱子长短是那年读完的本数", Math.max(...fhErr) <= 1, "最大差 " + Math.max(...fhErr) + "px");
-check("一本没读的年份空着", fbars.every((b, i) => (cntOf.get(yLo + i) ? b.h >= 2 : b.h === 0)), "空年的柱宽 " + fbars.filter((b, i) => !cntOf.get(yLo + i)).map((b) => b.h).join(","));
+const fStepV = (12 * scCalc.monthW * 100) / totalV;
+const fLineExp = calcBands.slice(1).map((b) => (b.x0 / totalV) * 100);
+const ferr = flines.map((v, i) => Math.abs(v - (fLineExp[i] ?? 0)));
+check(
+  "竖排年界线一年一道、间距相等",
+  flines.length === bandN - 1 && flines.every((v, i) => i === 0 || Math.abs(v - flines[i - 1] - fStepV) < 0.4) && Math.max(...ferr) < 0.6,
+  "最偏 " + Math.max(...ferr).toFixed(2) + "%，格宽 " + fStepV.toFixed(2) + "%"
+);
 
-/* 拖着导航条走：光标旁浮出哪一年、那年读完几本，滚动跟着走 */
+/* 拖着导航条走：光标旁浮出最近那本书的书名与日期，滚动跟着走 */
 const fnav = JSON.parse(
   await js("JSON.stringify((() => { const r = document.querySelector('.rv-navslot .rd-nav').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })())")
 );
@@ -424,16 +583,39 @@ check(
   "x " + Math.round(fnav.x) + " 宽 " + Math.round(fnav.w) + " 右沿 " + Math.round(fnav.x + fnav.w) + " / 内容右沿 " + wrapRight
 );
 const topBefore = await js("document.querySelector('.scroll').scrollTop");
+/* 条铺的是整条轴，滑块左沿就是视野起点在整条轴上的分位 —— 跟剪辑软件那条进度条
+   同一套。位置与内容一一对应，拖动因此是线性的，不会走两步换一把尺子 */
+const vBar = (x) => barP(x, totalV);
+const vTh0 = await thumbOf(".rv-navslot", true);
+const vz0 = 1 / (Number(await js("Number(getComputedStyle(document.querySelector('.rv')).getPropertyValue('--zi')) || 0")) || 1);
+check(
+  "竖排那条铺的是整条轴，滑块左沿就是视野起点",
+  Math.abs((vTh0.l / 100) * totalV - topBefore / vz0) < totalV * 0.003,
+  "滑块 " + vTh0.l.toFixed(2) + "%，算得 " + Math.round((vTh0.l / 100) * totalV) + "，视野起点 " + Math.round(topBefore / vz0)
+);
+check(
+  "滑块宽就是视野占整条轴的比例",
+  Math.abs(vTh0.w / 100 - (await js("document.querySelector('.scroll').clientHeight")) / vz0 / totalV) < 0.01,
+  vTh0.w.toFixed(3) + "%"
+);
+/* 按到条上三成处那本书的线：浮出来该是那本书，松手落到它那一带。
+   不取正中的那本 —— 书大半堆在最近几年，正中那本就在开场位置上，
+   滚不动，方向那一条验不出来 */
+const fPick = calcMarks.filter((m) => vBar(m.x) > 0.06 && vBar(m.x) < 0.9);
+const fMidMark = (fPick.length ? fPick : calcMarks).reduce((a, b) =>
+  Math.abs(vBar(b.x) - 0.35) < Math.abs(vBar(a.x) - 0.35) ? b : a
+);
+const fMidP = vBar(fMidMark.x);
 const fx = Math.round(fnav.x + fnav.w * 0.5);
-const fy = Math.round(fnav.y + fnav.h * 0.5);
+const fy = Math.round(fnav.y + fnav.h * fMidP);
 await call("Input.dispatchMouseEvent", { type: "mousePressed", x: fx, y: fy, button: "left", buttons: 1, clickCount: 1 });
 await wait(250);
-const fbub = await js("((document.querySelector('.rd-nav-bub') || {}).textContent || '').trim()");
-const fMidYear = yearAtP(0.5);
+const fbub = await bubOf(".rv-navslot");
+const fBook = fbub && fbub.k === "book" ? timeline.find((e) => e.title === titleOf(fbub.t)) : null;
 check(
-  "拖导航条浮出哪一年、那年读了几本",
-  fbub === fMidYear + " 年 · " + (cntOf.get(fMidYear) || 0) + " 本",
-  fbub || "没浮出来"
+  "拖到线的位置上，浮出的是那本书的书名与日期",
+  !!fBook && titleOf(fMidMark.text) === titleOf(fbub.t),
+  fbub ? fbub.t : "没浮出来"
 );
 const fbubBox = JSON.parse(
   await js("JSON.stringify((() => { const b = document.querySelector('.rd-nav-bub'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, h: r.height }; })())")
@@ -446,10 +628,47 @@ check(
 await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: fx, y: fy, button: "left", buttons: 0, clickCount: 1 });
 await wait(700);
 const topAfter = await js("document.querySelector('.scroll').scrollTop");
-check("拖到中间那年，竖排跟着滚过去", topAfter < topBefore * 0.5, Math.round(topBefore) + " → " + Math.round(topAfter));
+/* 松手朝最近的线靠一下，落点就是那本书。条铺全轴，滑块中心直接换算出视野正中
+   压在哪个世界坐标，跟「占整条轴百分之几」那套已经不搭界了 */
+const aTh = await thumbOf(".rv-navslot", true);
+const aMid = thumbCenter(aTh, totalV);
+check(
+  "拖到那本书，竖排跟着滚过去，落点压在正中",
+  topAfter < topBefore && Math.abs(aMid - fMidMark.x) < totalV * 0.005,
+  Math.round(topBefore) + " → " + Math.round(topAfter) + "（滑块正中 " + Math.round(aMid) + "，那本 " + Math.round(fMidMark.x) + "）"
+);
 await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 6, y: 200, button: "none", buttons: 0 });
 await wait(300);
 check("鼠标离开导航条，那行字收起来", (await js("document.querySelectorAll('.rd-nav-bub').length")) === 0);
+
+/* 竖排也是真拖：往上拖一段就往上滚，拖起来之后按住不动不该自己跑。
+   竖排的滑块靠 150ms 一轮量测推过来，最容易出现「手不动、它自己往前走」 */
+const vTop0 = await js("document.querySelector('.scroll').scrollTop");
+await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: fx, y: fy, button: "none", buttons: 0 });
+await wait(120);
+await call("Input.dispatchMouseEvent", { type: "mousePressed", x: fx, y: fy, button: "left", buttons: 1, clickCount: 1 });
+await wait(220);
+for (let i = 1; i <= 4; i++) {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: fx, y: fy - i * 10, button: "left", buttons: 1 });
+}
+await wait(450);
+const vTop1 = await js("document.querySelector('.scroll').scrollTop");
+check("竖排往上拖，跟着往上滚", vTop1 < vTop0 - 1000, Math.round(vTop0) + " → " + Math.round(vTop1));
+for (let i = 0; i < 14; i++) {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: fx, y: fy - 40 + (i % 2 ? 1 : -1), button: "left", buttons: 1 });
+}
+await wait(500);
+const vTop2 = await js("document.querySelector('.scroll').scrollTop");
+/* 判据按条上一像素值多少定：全轴铺满，条上一像素跨着半天，抖 ±1px 净位移
+   不到一个条像素；真要是自反馈那种漂移，抖十四下早跑出几个轴了 */
+const vPx = totalV / fnav.h;
+check(
+  "竖排拖起来按住不动，不自己往前跑",
+  Math.abs(vTop2 - vTop1) < vPx * 3,
+  Math.round(vTop1) + " → " + Math.round(vTop2) + "（抖 14 下，一个条像素值 " + Math.round(vPx) + "）"
+);
+await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: fx, y: fy - 40, button: "left", buttons: 0, clickCount: 1 });
+await wait(500);
 /* 滑块自己跟着滚动走：滚到底在最下，滚到顶在最上。
    滑块由滚动框里的量测推过来（滚动事件 + 150ms 一轮），一次读往往还停在上一处，
    所以望着目标等它落定再断言 */
@@ -520,27 +739,81 @@ for (let i = 0; i < 14; i++) await call("Input.dispatchMouseEvent", { type: "mou
 await wait(1500);
 const zMax = await zNow();
 const vDay = await js("document.querySelectorAll('.rv-tk.day').length");
-check("竖排放到最大能看到日刻度", zMax > 2.5 && vDay > 5, "z " + zMax + "，日刻度 " + vDay + " 根");
-/* 放到 3.2 倍时一屏只剩十来天，月线多半不在视野里，没有月名可量。
-   量的是抵缩放的那个倍数：--zi 正好是 1/z，刻度线与刻度字在屏幕上是恒定大小 */
+const vDayTxt = JSON.parse(
+  await js("JSON.stringify([...document.querySelectorAll('.rv-tk.day span')].map((n) => n.textContent.trim()))")
+);
+check("竖排放到最大能看到日刻度", zMax > 2.5 && vDay > 3, "z " + zMax + "，日刻度 " + vDay + " 根");
+/* 库里读得最多的那个月，天天都得有：日刻度只有倍数一条门槛，放大够了
+   一天一根，不挑间距也不跳过月初 */
+const busiestFirst = R.dayNum(busiest[0] + "-01");
+const busiestDays = new Date(Number(busiest[0].slice(0, 4)), Number(busiest[0].slice(5, 7)), 0).getDate();
+const realTicks = R.ticks(scCalc, busiestFirst, busiestFirst + busiestDays, 2);
+const realDays = realTicks.filter(
+  (x) => x.kind === "day" && R.dayStr(scCalc.dayAt(x.x)).slice(0, 7) === busiest[0]
+).length;
+check("最满那个月每一天都有日刻度", realDays === busiestDays, busiest[0] + "：" + realDays + " / " + busiestDays + " 天");
+/* 屏幕上也是这样：最左那根到最右那根之间，天天都得有一根，中间不许挖洞 */
+const vDayWx = JSON.parse(
+  await js(`JSON.stringify([...document.querySelectorAll('.rv-tk.day')].map((t) => parseFloat(t.style.top)))`)
+);
+const vGap = (() => {
+  if (!vDayWx.length) return "一根都没有";
+  const a = scCalc.dayAt(Math.min(...vDayWx));
+  const b = scCalc.dayAt(Math.max(...vDayWx));
+  return vDayWx.length === b - a + 1 ? true : vDayWx.length + " 根 / 该有 " + (b - a + 1) + " 天";
+})();
+check("竖排视野里每一天都有一根日刻度", vGap === true, String(vGap));
+/* 日刻度只画一道短线，跟横排一样不写字：一天一格，写满就是一排日期 */
+check("日刻度只画线，不写日期", vDay > 0 && vDayTxt.length === 0, vDay + " 根，带字 " + vDayTxt.length);
+/* 轴上带字的只剩月与年：一根月线配一个「5月」，不留说不清管哪一段的光杆线 */
+const bareMonth = await js(
+  "(() => { const all = document.querySelectorAll('.rv-tk.month'); const withText = document.querySelectorAll('.rv-tk.month span'); return all.length - withText.length; })()"
+);
+check("月刻度都带着月名", bareMonth === 0, bareMonth + " 根没有字的月线");
+/* 放大之后轴线本身还在。线画在一枚 1px 的伪元素上、按 1/z 压回去抵掉外层缩放；
+   要是直接把这枚元素写成 calc(1px * var(--zi)) 这么宽，三倍下只剩零点三像素，
+   会被栅格化成零宽，整条轴就没了 */
+const axisPaint = JSON.parse(
+  await js(`JSON.stringify((() => {
+    const a = document.querySelector('.rv-axis');
+    if (!a) return null;
+    const c = getComputedStyle(a, '::before');
+    const m = String(c.transform).match(/matrix\\(([\\d.]+)/);
+    return { w: parseFloat(c.width), h: Math.round(a.getBoundingClientRect().height), sx: m ? Number(m[1]) : 0, bg: c.backgroundImage.slice(0, 13) };
+  })())`)
+);
+const ziAxis = await js("Number(getComputedStyle(document.querySelector('.rv')).getPropertyValue('--zi')) || 0");
+check(
+  "放大之后轴线还在，屏幕上仍然是一像素",
+  !!axisPaint && axisPaint.w >= 1 && axisPaint.h > 100 && Math.abs(axisPaint.sx * zMax - 1) < 0.06,
+  axisPaint ? "元素高 " + axisPaint.h + "，线宽 " + axisPaint.w + "，压 " + axisPaint.sx.toFixed(3) + "（--zi " + ziAxis.toFixed(3) + "）" : "找不到轴线"
+);
+/* 量的是抵缩放的那个倍数：--zi 正好是 1/z，刻度字在屏幕上是恒定大小。
+   年份那枚字另走 --zy，不在这条口径里，所以只量月名 */
 const ziNow = await js("Number(getComputedStyle(document.querySelector('.rv')).getPropertyValue('--zi')) || 0");
-const vTickFs = await js("(() => { const s = document.querySelector('.rv-tk span'); return s ? parseFloat(getComputedStyle(s).fontSize) : 0; })()");
+const vTickFs = await js("(() => { const s = document.querySelector('.rv-tk.month span'); return s ? parseFloat(getComputedStyle(s).fontSize) : 0; })()");
 check(
   "刻度字不跟着放大",
-  Math.abs(ziNow - 1 / zMax) < 0.02 && (vTickFs === 0 || (vTickFs > 10 && vTickFs < 16)),
+  Math.abs(ziNow - 1 / zMax) < 0.02 && (vTickFs === 0 || (vTickFs >= 11 && vTickFs <= 14)),
   "--zi " + ziNow.toFixed(4) + "（1/z 是 " + (1 / zMax).toFixed(4) + "）" + (vTickFs ? "，字 " + vTickFs + "px" : "，视野里没有月名")
 );
 const vBody = await js("Number(getComputedStyle(document.querySelector('.rv')).getPropertyValue('--vi')) || 1");
 check("封面与文字的放大有封顶", vBody < 0.9 && vBody > 0.15, "--vi " + vBody);
 for (let i = 0; i < 14; i++) await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: zx, y: zy, deltaX: 0, deltaY: 200, modifiers: 2 });
-await wait(1000);
+/* 缩回 1 倍要等它真落回去：缩放途中条目会重挂，这时候点下去落到的是卸掉的节点 */
+await waitFor(async () => js("Number((document.querySelector('.rv').style.transform||'').match(/scale\\(([\\d.]+)/)?.[1] || 1)"), (v) => v < 1.05, 20, 120);
+await wait(300);
 
 /* 点一条开抽屉 */
-const firstTitle = (await js("(document.querySelector('.rv-item .rv-t') || {}).textContent || ''")).trim();
-await js("(() => { const r = document.querySelector('.rv-item'); if (r) r.click(); return 1; })()");
-await wait(900);
-const drawerTitle = await js("((document.querySelector('.drawer.on .dh h2')||{}).textContent||'').trim()");
-check("点一条开的是那本书的详情", !!firstTitle && drawerTitle.includes(firstTitle.replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+/, "").slice(0, 6)), drawerTitle.slice(0, 20));
+const openOne = async () => {
+  const t = (await js("(document.querySelector('.rv-item .rv-t') || {}).textContent || ''")).trim();
+  await js("(() => { const r = document.querySelector('.rv-item'); if (r) r.click(); return 1; })()");
+  const d = await waitFor(async () => js("((document.querySelector('.drawer.on .dh h2')||{}).textContent||'').trim()"), (v) => !!v, 8, 150);
+  return { t, d };
+};
+let opened = await openOne();
+if (!opened.d) opened = await openOne();
+check("点一条开的是那本书的详情", !!opened.t && opened.d.includes(opened.t.replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+/, "").slice(0, 6)), opened.d.slice(0, 20));
 
 /* 详情里两行日期都在，且都填着 */
 const dayLabels = await js("[...document.querySelectorAll('.drawer.on .kv > div > span:first-child')].map(e => e.textContent.trim())");
@@ -577,8 +850,12 @@ const barText = await js("(document.querySelector('.rd-bar')||{}).textContent||'
 check("统计条写着有日期的本数", barText.includes(String(stats.total) + " 本有日期"), barText.slice(0, 24));
 check("顶栏不摆媒介段，写着小说", (await js("document.querySelectorAll('.rd-scope').length")) === 1);
 
+}
+
 /* ---- 横排 ---- */
+seg = "横排";
 console.log("[横排]");
+if (want("h")) {
 const offNow = () =>
   js("(() => { const t = document.querySelector('.rd-rail').style.transform || ''; const m = t.match(/translate3d\\((-?[\\d.]+)px/); return m ? Math.abs(Number(m[1])) : 0; })()");
 const kNow = () => js("Number(getComputedStyle(document.querySelector('.rd-axis')).getPropertyValue('--k')) || 1");
@@ -617,10 +894,10 @@ await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: 796, y: blank
 await wait(900);
 const offZ1 = await offNow();
 check("轴上方那片空白里也能拖", offZ1 < offZ0 - 20, Math.round(offZ0) + " → " + Math.round(offZ1));
-const abars = await navBars(".rd-axwrap");
-check("横排导航条与竖排同一把尺子，一年一格", abars.length === bandN, abars.length + " 格 / " + bandN + " 年");
-const abub = await js("document.querySelectorAll('.rd-nav button').length");
-check("那排年份按钮撤了", abub === 0, abub + " 个还在");
+const abooks = await navBooks(".rd-axwrap");
+check("横排导航条与竖排同一批书，每本一根线", abooks.length === timeline.length, abooks.length + " 根 / " + timeline.length + " 本");
+const abub = await js("document.querySelectorAll('.rd-nav .rd-nav-year').length");
+check("条底下按年写着年份", abub >= 4, abub + " 个");
 check("开场落在最右，最近的书先看见", (await offNow()) > 1000, Math.round(await offNow()) + "px");
 const lanes = await js("JSON.stringify([document.querySelectorAll('.rd-node.lane0').length, document.querySelectorAll('.rd-node.lane1').length])");
 const [l0, l1] = JSON.parse(lanes);
@@ -713,11 +990,11 @@ const labels = JSON.parse(
   })()`)
 );
 check("每本封面外侧都标了书名", labels.t === labels.all, labels.t + " / " + labels.all + " · 例 " + labels.first.slice(0, 12));
-check("跨天那几本两头都标了日号", labels.d0 === longBar.length && labels.d1 === labels.all, "起 " + labels.d0 + " / 跨天 " + longBar.length + "，止 " + labels.d1);
+check("每本两头都标了起止日期", labels.d0 === labels.all && labels.d1 === labels.all, "起 " + labels.d0 + " / 止 " + labels.d1 + " / 共 " + labels.all);
 const hDayTxt = JSON.parse(
   await js("JSON.stringify([...document.querySelectorAll('.rd-d0, .rd-d1')].map((n) => n.textContent.trim()))")
 );
-check("横排长条两头的日号只写数字", hDayTxt.length > 0 && hDayTxt.every((s) => /^\d{1,2}$/.test(s)), hDayTxt.slice(0, 6).join(" / "));
+check("横排长条两头的日期写成 月-日", hDayTxt.length > 0 && hDayTxt.every((s) => /^\d{2}-\d{2}$/.test(s)), hDayTxt.slice(0, 6).join(" / "));
 
 /* 刻度：1 倍按月，放大到 5 倍按日 */
 const tk1 = JSON.parse(
@@ -726,23 +1003,64 @@ const tk1 = JSON.parse(
   )
 );
 check("1 倍下有月刻度且带字", tk1.m > 0 && tk1.ml > 0, "月 " + tk1.m + "，带字 " + tk1.ml);
+check("1 倍下没有日刻度", tk1.d === 0, tk1.d + " 个");
 const hmStyle = JSON.parse(
   await js(
     "JSON.stringify((() => { const s = document.querySelector('.rd-tk.month span'); if (!s) return null; const c = getComputedStyle(s); return { fs: parseFloat(c.fontSize), fw: Number(c.fontWeight) }; })())"
   )
 );
 check("横轴月刻度字大且加粗", !!hmStyle && hmStyle.fs >= 12 && hmStyle.fw >= 700, hmStyle ? hmStyle.fs + "px / " + hmStyle.fw : "");
+/* 年份注记挂在年线头上：线比月线长一倍，字在轴的上方，后面跟一支朝右的箭头，
+   说这一年从这道线往右铺开 */
+const yStyle = JSON.parse(
+  await js(`JSON.stringify((() => {
+    const y = document.querySelector('.rd-tk.year');
+    const m = document.querySelector('.rd-tk.month');
+    if (!y || !m) return null;
+    const ys = y.querySelector('span');
+    const a = y.querySelector('.rd-yarw');
+    const yr = y.getBoundingClientRect();
+    const sr = ys ? ys.getBoundingClientRect() : null;
+    const ar = a ? a.getBoundingClientRect() : null;
+    return {
+      yl: parseFloat(getComputedStyle(y, '::before').height),
+      ml: parseFloat(getComputedStyle(m, '::before').height),
+      yf: ys ? parseFloat(getComputedStyle(ys).fontSize) : 0,
+      above: sr ? Math.round(yr.top - sr.bottom) : -99,
+      arW: ar ? Math.round(ar.width) : 0,
+      arH: ar ? Math.round(ar.height) : 0
+    };
+  })())`)
+);
+check(
+  "年线比月线长，年份注记挂在轴上方",
+  !!yStyle && yStyle.yl >= yStyle.ml * 1.8 && yStyle.above > 0,
+  yStyle ? "线 " + yStyle.yl + " / " + yStyle.ml + "px，字离轴 " + yStyle.above + "px（" + yStyle.yf + "px 字）" : "找不到年刻度"
+);
+check(
+  "年份后面跟一支朝右的箭头",
+  !!yStyle && yStyle.arW >= 20 && yStyle.arH <= 2,
+  yStyle ? "箭头 " + yStyle.arW + "×" + yStyle.arH + "px" : ""
+);
 
-/* 一屏只有两个多月，先落到读得最多的那个月：放到 5 倍时那一段才铺得开日刻度，
-   落在几年空档里就只剩一两根线，验不出日刻度 */
+/* 一屏只有一个月左右，先落到读得最多的那个月：放到 5 倍时那一段才铺得开日刻度，
+   落在只读了一两本的月份里，一屏就只有寥寥几条线 */
 const navSeek = JSON.parse(
   await js("JSON.stringify((() => { const r = document.querySelector('.rd-axwrap .rd-nav').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })())")
 );
-const seekX = Math.round(navSeek.x + navSeek.w * busyP);
 const seekY = Math.round(navSeek.y + navSeek.h / 2);
-await call("Input.dispatchMouseEvent", { type: "mousePressed", x: seekX, y: seekY, button: "left", buttons: 1, clickCount: 1 });
-await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: seekX, y: seekY, button: "left", buttons: 0, clickCount: 1 });
-await wait(900);
+/* 条铺的是那一段固定的世界坐标，点哪儿就落到哪儿，一下就到，不用反复贴边挪 */
+const seekTotal = navR.b - navR.a;
+const seekToBusy = async () => {
+  const p = barP(busyX, seekTotal);
+  const x = Math.round(navSeek.x + navSeek.w * Math.min(0.98, Math.max(0.02, p)));
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: seekY, button: "none", buttons: 0 });
+  await wait(120);
+  await call("Input.dispatchMouseEvent", { type: "mousePressed", x, y: seekY, button: "left", buttons: 1, clickCount: 1 });
+  await call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: seekY, button: "left", buttons: 0, clickCount: 1 });
+  await wait(700);
+};
+await seekToBusy();
 await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 6, y: 300, button: "none", buttons: 0 });
 await wait(250);
 
@@ -760,12 +1078,25 @@ check("放大时书名字跟着变大", fs1 > fs0 * 1.9, fs0.toFixed(1) + " → 
 check("封面字号到 2.2 倍封顶", Math.abs(vCap - 2.2) < 0.03, vCap.toFixed(2));
 const tk5 = JSON.parse(
   await js(
-    "JSON.stringify({d:document.querySelectorAll('.rd-tk.day').length,dl:[...document.querySelectorAll('.rd-tk.day span')].length,m:document.querySelectorAll('.rd-tk.month').length,sun:document.querySelectorAll('.rd-tk.day.sun').length})"
+    "JSON.stringify({d:document.querySelectorAll('.rd-tk.day').length,dl:[...document.querySelectorAll('.rd-tk.day span')].length,m:document.querySelectorAll('.rd-tk.month').length,ml:[...document.querySelectorAll('.rd-tk.month span')].length,y:document.querySelectorAll('.rd-tk.year').length,sun:document.querySelectorAll('.rd-tk.day.sun, .rd-tk.sun').length})"
   )
 );
-check("放大到最大出现日刻度", tk5.d > 10, tk5.d + " 个");
-check("日刻度不写日号", tk5.dl === 0, tk5.dl + " 个带字");
-check("星期天那几根加粗", tk5.sun >= 1, tk5.sun + " 根");
+check("放大到最大出现日刻度", tk5.d >= 4, tk5.d + " 个");
+check("横排日刻度也只画线，不写字", tk5.d > 0 && tk5.dl === 0, tk5.dl + " / " + tk5.d + " 个带字");
+/* 与竖排同一条：最左那根到最右那根之间天天都得有，跳一天就算丢 */
+const aDayWx = JSON.parse(
+  await js(`JSON.stringify([...document.querySelectorAll('.rd-tk.day')].map((t) => parseFloat(t.style.getPropertyValue('--wx'))))`)
+);
+const aGap = (() => {
+  if (!aDayWx.length) return "一根都没有";
+  const a = scCalc.dayAt(Math.min(...aDayWx));
+  const b = scCalc.dayAt(Math.max(...aDayWx));
+  return aDayWx.length === b - a + 1 ? true : aDayWx.length + " 根 / 该有 " + (b - a + 1) + " 天";
+})();
+check("横排视野里每一天都有一根日刻度", aGap === true, String(aGap));
+/* 放到 5 倍一屏只剩半个月，月初那道线多半不在视野里，月份这块不在这里验 ——
+   1 倍那条已经验过月刻度带字 */
+check("刻度里再没有星期那一档", tk5.sun === 0, tk5.sun + " 根带 sun");
 
 /* 缩回 1 倍 */
 for (let i = 0; i < 12; i++) await wheel(cx, cy, 240);
@@ -875,7 +1206,9 @@ for (let round = 0; round < 3; round++) {
 }
 check("双击空白回到 1 倍", Math.abs(kBack - 1) < 0.02, kBack.toFixed(2));
 
-/* 导航条按年等分：扫到哪儿浮出来的就该是那一年，与真实轴长无关 */
+/* 条上每本书一根线：扫到线上浮出来的就该是那本书；空档里没有书，退回到
+   「哪一年 · 几本」。位置一律拿离线那一份对，扫的点也从那份里挑 ——
+   这条轴上早年大半是空年，随手扫几个位置多半落在空档上 */
 const navBox = JSON.parse(
   await js("JSON.stringify((() => { const r = document.querySelector('.rd-axwrap .rd-nav').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })())")
 );
@@ -883,29 +1216,96 @@ const navY = Math.round(navBox.y + navBox.h / 2);
 const bubbleAt = async (p) => {
   await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(navBox.x + navBox.w * p), y: navY, button: "none", buttons: 0 });
   await wait(200);
-  return js("((document.querySelector('.rd-axwrap .rd-nav-bub') || {}).textContent || '').trim()");
+  return bubOf(".rd-axwrap");
 };
-const wantAt = (p) => yearAtP(p) + " 年 · " + (cntOf.get(yearAtP(p)) || 0) + " 本";
-const bubL = await bubbleAt(0.05);
-const bubM = await bubbleAt(0.5);
-const bubR = await bubbleAt(0.95);
+/* 条铺的是那一段固定的世界坐标：位置就是它在条上的比例，跟视野无关，挑扫的点
+   也不用管眼前露着哪一段 */
+const totalA = navR.b - navR.a;
+const aBar = (x) => barP(x, totalA);
+const aTh0 = await thumbOf(".rd-axwrap");
 check(
-  "导航条按年等分：扫到哪儿就是那一年",
-  bubL === wantAt(0.05) && bubM === wantAt(0.5) && bubR === wantAt(0.95),
-  [bubL, bubM, bubR].join(" / ")
+  "横排那条铺的是整条轴，滑块留在条里",
+  !!aTh0 && aTh0.w > 0 && aTh0.l >= -0.01 && aTh0.l + aTh0.w <= 100.5,
+  aTh0 ? "左 " + aTh0.l.toFixed(2) + "% 宽 " + aTh0.w.toFixed(3) + "%" : "没有滑块"
 );
+const aPos = JSON.parse(
+  await js("JSON.stringify([...document.querySelectorAll('.rd-axwrap .rd-nav-book')].map((b) => parseFloat(b.style.left)))")
+);
+const aErr = aPos.map((v, i) => Math.abs(v - (calcMarks[i].x / totalA) * 100));
+check(
+  "横排那条上线的位置对得上",
+  aPos.length === calcMarks.length && Math.max(...aErr) < 0.2,
+  "最偏 " + Math.max(...aErr).toFixed(3) + "%"
+);
+const onBar = calcMarks.filter((m) => aBar(m.x) > 0.05 && aBar(m.x) < 0.95);
+const nearBar = (q) => onBar.reduce((a, b) => (Math.abs(aBar(b.x) - q) < Math.abs(aBar(a.x) - q) ? b : a), onBar[0]);
+const picked = [];
+for (const q of [0.08, 0.3, 0.55, 0.8, 0.94]) {
+  const m = nearBar(q);
+  if (m && !picked.some((x) => x.id === m.id)) picked.push(m);
+}
+const bubs = [];
+for (const m of picked) bubs.push({ p: aBar(m.x), want: m, ...(await bubbleAt(aBar(m.x))) });
+const bBooks = bubs.filter((b) => b && b.k === "book");
+check(
+  "扫到书的线上，浮出的就是那本书",
+  picked.length >= 4 && bBooks.length === picked.length,
+  bubs.map((b) => (b ? b.k + ":" + b.t.slice(0, 10) : "无")).join(" / ")
+);
+/* 说的是哪本书，就该是那一点最近的那本：差得远说明线的位置与反查不是同一把尺子 */
+const bubErr = bBooks.map((b) => (titleOf(b.t) === titleOf(b.want.text) ? 0 : 9));
+check("浮出来的就是那一点最近的书", bubErr.every((d) => d < 0.02), bubErr.join(" / "));
+/* 一本没读的那几年，条上是干净的空白，落到那里就报年份与本数 */
+const emptyBand = calcBands.find((b) => b.n === 0);
+if (emptyBand) {
+  const eb = await bubbleAt(aBar((emptyBand.x0 + emptyBand.x1) / 2));
+  check("空档处报的是哪一年、几本", !!eb && eb.k === "year" && eb.t === emptyBand.y + " 年 · 0 本", eb ? eb.t : "没浮出来");
+}
 
-/* 拖到最左：最早那年，偏移归零。按下之前先把指针挪过去 —— 上一处停在别的地方时，
-   浏览器要先做一次命中测试，直接按容易落在上一次的落点上 */
-await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(navBox.x + 2), y: navY, button: "none", buttons: 0 });
-await wait(120);
-await call("Input.dispatchMouseEvent", { type: "mousePressed", x: Math.round(navBox.x + 2), y: navY, button: "left", buttons: 1, clickCount: 1 });
-await wait(300);
-await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: Math.round(navBox.x + 2), y: navY, button: "left", buttons: 0, clickCount: 1 });
-await wait(600);
-check("拖到最左，落到最早那年开头", (await offNow()) < 60, Math.round(await offNow()) + "px");
+/* 按到条的最左端：一跳四年，按几下就退到最早那年，偏移归零。
+   按之前先把指针挪过去 —— 上一处停在别的地方时，浏览器要先做一次命中测试，
+   直接按容易落在上一次的落点上 */
+const farLeft = async () => {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(navBox.x + 2), y: navY, button: "none", buttons: 0 });
+  await wait(120);
+  await call("Input.dispatchMouseEvent", { type: "mousePressed", x: Math.round(navBox.x + 2), y: navY, button: "left", buttons: 1, clickCount: 1 });
+  await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: Math.round(navBox.x + 2), y: navY, button: "left", buttons: 0, clickCount: 1 });
+  await wait(500);
+};
+for (let i = 0; i < 10 && (await offNow()) > 60; i++) await farLeft();
+check("按到最左，退到最早那年开头", (await offNow()) < 60, Math.round(await offNow()) + "px");
 
-/* 点中间：落到中间那几年，滑块跟着过去 */
+/* 在条上滚轮是翻年份：一路平移，倍数一动不动。条铺全轴，按「一年」定步长 */
+const kBeforeNavWheel = await kNow();
+const offBeforeNavWheel = await offNow();
+await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: Math.round(navBox.x + navBox.w * 0.5), y: navY, deltaX: 0, deltaY: 120 });
+await wait(700);
+const offAfterNavWheel = await offNow();
+check(
+  "在条上滚轮翻年份，不缩放",
+  Math.abs((await kNow()) - kBeforeNavWheel) < 0.005 && offAfterNavWheel - offBeforeNavWheel > 4000,
+  "k 仍 " + kBeforeNavWheel.toFixed(2) + "，偏移 " + Math.round(offBeforeNavWheel) + " → " + Math.round(offAfterNavWheel)
+);
+await farLeft();
+
+/* 活动框的宽窄跟着倍数走：缩得越远，框越宽 */
+const thW = async () => js("parseFloat((document.querySelector('.rd-axwrap .rd-nav-thumb') || { style: {} }).style.width) || 0");
+await wait(400);
+const thW1 = await thW();
+for (let i = 0; i < 16; i++) await wheel(cx, cy, 240);
+await wait(1000);
+const kLow = await kNow();
+const thW2 = await thW();
+check(
+  "缩得越远，活动框越宽",
+  kLow < 0.32 && thW1 > 0 && thW2 > thW1 * 2.2,
+  "k " + kLow.toFixed(2) + "，宽 " + thW1.toFixed(2) + "% → " + thW2.toFixed(2) + "%"
+);
+for (let i = 0; i < 24 && (await kNow()) < 0.99; i++) await wheel(cx, cy, -120);
+await wait(900);
+
+/* 点导航条：按在哪儿，滑块中心就落到哪儿，内容跟着到那一带 —— 跟进度条一个脾气，
+   不再是「框永远回正中」。点六成处，滑块中心就该停在六成 */
 const navPress = async (x) => {
   await call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: navY, button: "none", buttons: 0 });
   await wait(120);
@@ -913,33 +1313,110 @@ const navPress = async (x) => {
   await call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: navY, button: "left", buttons: 0, clickCount: 1 });
   await wait(600);
 };
-const thumbBox = async () =>
-  JSON.parse(await js("JSON.stringify((() => { const t = document.querySelector('.rd-axwrap .rd-nav-thumb'); return { l: parseFloat(t.style.left), w: parseFloat(t.style.width) }; })())"));
-await navPress(Math.round(navBox.x + navBox.w * 0.5));
+const thumbBox = () => thumbOf(".rd-axwrap");
+await navPress(Math.round(navBox.x + navBox.w * 0.6));
 const offMid = await offNow();
 const th0 = await thumbBox();
-check("点导航条中间，落到中间那几年", offMid > 300, Math.round(offMid) + "px");
-check("滑块跟着挪到中间", th0.l > 20, th0.l.toFixed(2) + "% 处，宽 " + th0.w.toFixed(2) + "%");
+check("点导航条，落到那一段", offMid > 300, Math.round(offMid) + "px");
+check(
+  "滑块中心停在按的那一处",
+  Math.abs(th0.l + th0.w / 2 - 60) < 1.5,
+  "中心 " + (th0.l + th0.w / 2).toFixed(2) + "%，宽 " + th0.w.toFixed(3) + "%"
+);
 
-/* 拖滑块本身：按下去不被吸到光标正中，往左拖偏移跟着退 */
+/* 拖滑块本身。按在滑块上，抓住的就是滑块里那一处 */
 const grabX = Math.round(navBox.x + navBox.w * ((th0.l + th0.w / 2) / 100));
+await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX, y: navY, button: "none", buttons: 0 });
+await wait(120);
 await call("Input.dispatchMouseEvent", { type: "mousePressed", x: grabX, y: navY, button: "left", buttons: 1, clickCount: 1 });
-await wait(300);
+await wait(250);
 const offT1 = await offNow();
-check("按在滑块上，滑块不被吸到光标正中", Math.abs(offT1 - offMid) <= 40, Math.round(offMid) + " → " + Math.round(offT1));
-for (let i = 1; i <= 8; i++) {
-  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX - i * 30, y: navY, button: "left", buttons: 1 });
+check("按在滑块上，滑块不被吸到光标正中", Math.abs(offT1 - offMid) <= 2, Math.round(offMid) + " → " + Math.round(offT1));
+
+/* 往左挪 12px */
+for (let i = 1; i <= 3; i++) {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX - i * 4, y: navY, button: "left", buttons: 1 });
 }
-await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: grabX - 240, y: navY, button: "left", buttons: 0, clickCount: 1 });
+await wait(200);
+const offT2 = await offNow();
+/* 拖起来之后按住不动，指针抖 ±1px 十几个来回：偏移一个像素都不该漂。
+   以前是「按绝对分位反查、窗口又按视野中心重算」，抖一下视野就自己往前跑一截 */
+for (let i = 0; i < 14; i++) {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX - 12 + (i % 2 ? 1 : -1), y: navY, button: "left", buttons: 1 });
+}
+await wait(400);
+const offT3 = await offNow();
+/* 判据按「条上一像素值多少」定：抖 ±1px 净位移不到一个条像素，
+   真要是自反馈那种漂移，抖十四下早就跑出几个轴了 */
+const pxWorld = (totalA / navBox.w) * (await kNow());
+check(
+  "拖起来之后按住不动，视野不自己往前跑",
+  Math.abs(offT3 - offT2) < pxWorld * 3,
+  Math.round(offT2) + " → " + Math.round(offT3) + "（抖 14 下，一个条像素值 " + Math.round(pxWorld) + "）"
+);
+for (let i = 1; i <= 8; i++) {
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX - 12 - i * 30, y: navY, button: "left", buttons: 1 });
+}
+await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: grabX - 252, y: navY, button: "left", buttons: 0, clickCount: 1 });
 await wait(600);
 const th1 = await thumbBox();
-const offT2 = await offNow();
-check("往左拖滑块，偏移跟着退", offT2 < offT1 - 100, Math.round(offT1) + " → " + Math.round(offT2));
+const offT4 = await offNow();
+check("往左拖滑块，偏移跟着退", offT4 < offT3 - 100, Math.round(offT3) + " → " + Math.round(offT4));
 check("滑块自己也跟着挪", th1.l < th0.l, th0.l.toFixed(2) + "% → " + th1.l.toFixed(2) + "%");
+/* 拖多远走多远：条上 240px 折成世界坐标该走多少，就走多少。以前是「按位置
+   反查」，拖同样的距离能跑出去几十倍，这条钉住 1:1 */
+const pxOff = (totalA / navBox.w) * (await kNow());
+const wantOff = 240 * pxOff;
+check(
+  "拖动走的距离与手一致",
+  Math.abs(Math.abs(offT4 - offT2) - wantOff) < wantOff * 0.08,
+  "走了 " + Math.round(Math.abs(offT4 - offT2)) + "px，该走 " + Math.round(wantOff) + "px"
+);
+check(
+  "蓝框跟着手走，走的距离也对得上",
+  Math.abs(th0.l - th1.l - (240 / navBox.w) * 100) < 2,
+  "框挪了 " + (th0.l - th1.l).toFixed(2) + "%，手挪了 " + ((240 / navBox.w) * 100).toFixed(2) + "%"
+);
+
+/* 拖到条的最右端就是轴的最尾：跟进度条一样，到底就停。再往外拖也不再往前走 */
+const stepTo = async (from, to, n) => {
+  for (let i = 1; i <= n; i++) {
+    await call("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: Math.round(from + ((to - from) * i) / n),
+      y: navY,
+      button: "left",
+      buttons: 1
+    });
+  }
+};
+await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: grabX, y: navY, button: "none", buttons: 0 });
+await wait(120);
+await call("Input.dispatchMouseEvent", { type: "mousePressed", x: grabX, y: navY, button: "left", buttons: 1, clickCount: 1 });
+await wait(220);
+const edgeIn = Math.round(navBox.x + navBox.w - 1);
+await stepTo(grabX, edgeIn, 12);
+await wait(300);
+const offEdge = await offNow();
+const thEdge = await thumbBox();
+check(
+  "拖到条的最右端，滑块贴到右沿",
+  Math.abs(thEdge.l + thEdge.w - 100) < 1.5,
+  "右沿 " + (thEdge.l + thEdge.w).toFixed(2) + "%"
+);
+const outX = Math.round(navBox.x + navBox.w + 150);
+await stepTo(edgeIn, outX, 3);
+await wait(300);
+const offOut = await offNow();
+check("拖出条外就停在轴尾，不再往前跑", Math.abs(offOut - offEdge) < 2, Math.round(offEdge) + " → " + Math.round(offOut));
+await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: outX, y: navY, button: "left", buttons: 0, clickCount: 1 });
+await wait(500);
 await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 6, y: 300, button: "none", buttons: 0 });
 await wait(250);
 
-/* 点一张封面开抽屉 */
+/* 点一张封面开抽屉。条铺全轴，一下就能落到读得最多的那个月 */
+await seekToBusy();
+await wait(500);
 const pick = JSON.parse(
   await js(`(() => {
     for (const n of document.querySelectorAll('.rd-node')) {
@@ -963,6 +1440,166 @@ if (pick.id) {
   check("横排上找得到能点的封面", false, "一屏内没有落得下的封面");
 }
 
+/* 条下面每年一枚年份字，左右居中挂在各自那一段，点一下就跳到那一年 */
+const navBarW = await js("document.querySelector('.rd-axwrap .rd-nav').clientWidth");
+const navYears = JSON.parse(
+  await js(
+    "JSON.stringify([...document.querySelectorAll('.rd-axwrap .rd-nav-year')].map((b) => ({ y: +b.dataset.y, x: parseFloat(b.style.left) })))"
+  )
+);
+check(
+  "条下面按年写着年份，从早到晚",
+  navYears.length >= 4 && navYears.every((v, i) => i === 0 || navYears[i - 1].y < v.y),
+  navYears.map((v) => v.y).join(" ")
+);
+const yErr = [];
+for (const b of calcBands) {
+  const got = navYears.find((v) => v.y === b.y);
+  if (!got) continue;
+  const want = (((Math.min(b.x1, navR.b) + Math.max(b.x0, navR.a)) / 2 - navR.a) / (navR.b - navR.a)) * navBarW;
+  /* 两头的字被掐在条里，本来就不在正中，不比 */
+  if (want < 20 || want > navBarW - 20) continue;
+  yErr.push(Math.abs(want - got.x));
+}
+check("年份字挂在自己那一段的正中", yErr.length >= 3 && Math.max(...yErr) < 2, "最偏 " + Math.max(...yErr).toFixed(1) + "px");
+
+const yPick = navYears[Math.floor(navYears.length / 2)];
+const yBtn = JSON.parse(
+  await js(
+    `JSON.stringify((() => { const b = document.querySelector('.rd-axwrap .rd-nav-year[data-y="${yPick.y}"]').getBoundingClientRect(); return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }; })())`
+  )
+);
+await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: yBtn.x, y: yBtn.y, button: "none", buttons: 0 });
+await wait(120);
+const yHit = await waitFor(
+  () => js(`(() => { const e = document.elementFromPoint(${yBtn.x}, ${yBtn.y}); return e ? (e.className || e.tagName) : "none"; })()`),
+  (v) => String(v).includes("rd-nav-year"),
+  8,
+  120
+);
+const yGeo = await js(
+  `JSON.stringify((() => {
+    const r = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+    return {
+      w: [innerWidth, innerHeight],
+      nav: r(document.querySelector('.rd-axwrap .rd-nav')),
+      ys: r(document.querySelector('.rd-axwrap .rd-nav-years')),
+      btn: r(document.querySelector('.rd-axwrap .rd-nav-year[data-y="${yPick.y}"]')),
+      ax: r(document.querySelector('.rd-axis'))
+    };
+  })())`
+);
+await call("Input.dispatchMouseEvent", { type: "mousePressed", x: yBtn.x, y: yBtn.y, button: "left", buttons: 1, clickCount: 1 });
+await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: yBtn.x, y: yBtn.y, button: "left", buttons: 0, clickCount: 1 });
+await wait(1000);
+const yBand = calcBands.find((b) => b.y === yPick.y) || { x0: 0, x1: 1 };
+const yWx = (await offNow()) / (await kNow()) + (await js("document.querySelector('.rd-axis').clientWidth")) / 2 / (await kNow());
+check(
+  "点年份字，那一年摆到视野正中",
+  Math.abs(yWx - (yBand.x0 + yBand.x1) / 2) < (yBand.x1 - yBand.x0) * 0.12,
+  "点 " + yPick.y + " 的 " + yBtn.x + "," + yBtn.y + "（命中 " + yHit + " / " + yGeo + "），落在 " + Math.round(yWx) + "，那年中间 " + Math.round((yBand.x0 + yBand.x1) / 2)
+);
+
+/* 显示区间：两个年份框直接写四位数字，右边一对上下箭头各调一年；
+   写超了两头就夹回去 —— 早于最早那本、晚于今年的都写不进去 */
+const withBooks = calcBands.filter((b) => b.n > 0);
+if (withBooks.length >= 4) {
+  const earliest = Number(R.dayStr(scCalc.first).slice(0, 4));
+  const thisYear = new Date().getFullYear();
+  const rY0 = Math.min(withBooks[withBooks.length - 4].y, withBooks[withBooks.length - 2].y);
+  const rY1 = Math.max(withBooks[withBooks.length - 4].y, withBooks[withBooks.length - 2].y);
+  const boxes = async () =>
+    JSON.parse(
+      await js("JSON.stringify([...document.querySelectorAll('.rd-range .rd-year-in')].map((i) => i.value))")
+    );
+  /* 当真人打字：先点进框里，塞值发 input，再离框（离框才提交） */
+  const typeYear = async (i, y) => {
+    await js(`(() => { const el = document.querySelectorAll('.rd-range .rd-year-in')[${i}]; if (!el) return 0;
+      el.focus();
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      set.call(el, ${JSON.stringify(String(y))});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.blur();
+      return 1; })()`);
+    await wait(700);
+  };
+  const stepYear = async (i, dir) => {
+    await js(
+      `(() => { const el = document.querySelectorAll('.rd-range .rd-year-in')[${i}]` +
+        `.parentElement.querySelector('.rd-year-step.${dir}'); if (!el || el.disabled) return 0; el.click(); return 1; })()`
+    );
+    await wait(600);
+  };
+
+  const dflt = await boxes();
+  check(
+    "显示区间一进来就是最早那本到今年",
+    dflt[0] === String(earliest) && dflt[1] === String(thisYear),
+    dflt.join(" – ") + "（该 " + earliest + " – " + thisYear + "）"
+  );
+
+  /* 早于最早那本、晚于今年，两头都夹回来 */
+  await typeYear(0, earliest - 6);
+  const clampedLo = await boxes();
+  check("写的年份早于最早那本，夹回最早那年", clampedLo[0] === String(earliest), clampedLo[0] + " / " + earliest);
+
+  await typeYear(1, thisYear + 9);
+  const clampedHi = await boxes();
+  check("写的年份晚于今年，夹回今年", clampedHi[1] === String(thisYear), clampedHi[1] + " / " + thisYear);
+
+  /* 换区间前读一次滑块：宽窄只跟「铺开多长」有关，比它才见得着条被摊开了 */
+  const thBefore = await thumbOf(".rd-axwrap");
+
+  /* 箭头各调一年 */
+  await typeYear(0, rY0);
+  await typeYear(1, rY1);
+  const beforeStep = await boxes();
+  await stepYear(0, "up");
+  const upBox = await boxes();
+  check(
+    "点向上的箭头，开始年份加一年",
+    Number(upBox[0]) === Number(beforeStep[0]) + 1,
+    beforeStep[0] + " → " + upBox[0]
+  );
+  await stepYear(0, "down");
+  const downBox = await boxes();
+  check("点向下的箭头，减回一年", downBox[0] === String(rY0), downBox[0] + " / " + rY0);
+
+  await typeYear(0, rY0);
+  await typeYear(1, rY1);
+  const rRange = R.yearRange(scCalc, rY0, rY1);
+  const wantN = R.navMarks(timeline, scCalc, rRange).length;
+  const gotN = await js("document.querySelectorAll('.rd-axwrap .rd-nav-book').length");
+  check(
+    "换了显示区间，条上只剩那几年的书",
+    wantN > 0 && gotN === wantN,
+    gotN + " 根 / 该 " + wantN + " 根（全部 " + calcMarks.length + "）"
+  );
+  const thAfter = await thumbOf(".rd-axwrap");
+  const spanAll = navR.b - navR.a;
+  const spanIn = rRange.b - rRange.a;
+  check(
+    "条只铺这几年，同样的视野滑块长得多",
+    thAfter.w > thBefore.w && Math.abs(thAfter.w / thBefore.w - spanAll / spanIn) < 0.3,
+    "宽 " + thAfter.w.toFixed(3) + "% 对 " + thBefore.w.toFixed(3) + "%（铺开 " + (spanAll / spanIn).toFixed(1) + " 倍窄）"
+  );
+  const yN = await js("document.querySelectorAll('.rd-axwrap .rd-nav-year').length");
+  check("区间里一年一个字", yN >= 2 && yN <= rY1 - rY0 + 1, yN + " 个 / " + (rY1 - rY0 + 1) + " 年");
+  const saved = await js("localStorage.getItem('booklib.readRange')");
+  check("区间记在本地，下次打开还是这一段", saved === rY0 + "-" + rY1, String(saved));
+  /* 重置：回到最早那本到今年，条也回到整条轴 */
+  await js("(() => { const b = [...document.querySelectorAll('.rd-range button')].find((x) => x.textContent.trim() === '重置'); if (b) b.click(); return b ? 1 : 0; })()");
+  await wait(1000);
+  const backBox = await boxes();
+  const backN = await js("document.querySelectorAll('.rd-axwrap .rd-nav-book').length");
+  const backSaved = await js("localStorage.getItem('booklib.readRange')");
+  check(
+    "重置回到最早那本到今年",
+    backBox[0] === String(earliest) && backBox[1] === String(thisYear) && backN === calcMarks.length && backSaved === "",
+    backBox.join(" – ") + "，" + backN + " 根，本地值 " + JSON.stringify(backSaved)
+  );
+}
+
 /* 切回竖排：同一批书，只是换了排布 */
 await clickText(".rd-switch button", "竖排");
 await wait(900);
@@ -971,6 +1608,10 @@ check(
   (await js("document.querySelectorAll('.rd-node').length")) === 0 && (await js("document.querySelectorAll('.rv-item').length")) > 0
 );
 
-console.log("\n阅读冒烟 " + ok + "/" + (ok + bad) + " 通过");
+}
+
+const parts = [...segStat].map(([k, v]) => k + " " + v.ok + "/" + (v.ok + v.bad));
+console.log(parts.length > 1 ? "\n" + parts.join(" · ") : "");
+console.log("阅读冒烟 " + ok + "/" + (ok + bad) + " 通过" + (ONLY.length ? "（只跑 " + ONLY.join(",") + "）" : ""));
 stop();
 process.exit(bad ? 1 : 0);

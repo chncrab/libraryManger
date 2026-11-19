@@ -3,17 +3,20 @@
  *
  * 世界坐标是 1 倍下的像素，界面再乘自己的缩放倍数。
  *
- * 月份按同一个宽度排：全轴取「过得最满的那个月」的宽度，一月一格，每个月都把
- * 自己的日子按比例摊开填满这一格。照日历天数各排各的话，二月比一月窄一截、
- * 读书密的月份又被撑得很开，一路看下去节奏忽快忽慢；照自然宽度排、把余下的空白
- * 留在月末，稀疏的月份末尾又会空出一大段，下个月从那之后才开始，看着还是忽长忽短。
- * 统一之后每个月正好一格，哪个月读得多，由月里的书自己去挤，轴本身不跟着伸缩。
+ * 轴是一整张连续日历：从最早那本书所在年份的一月，一直铺到今天所在年份的十二月，
+ * 每月一格、每格一样宽，一年正好十二格。中间几年一本没读也照占格，不压缩、
+ * 不跳过，所以「空了多久」在轴上就是实打实的多长。格子里每天一样宽 —— 书只用来
+ * 把月宽撑起来，不把某一天撑开，所以一天正好一格、一根日刻度。
  *
  * 一天是相邻两个点之间的一段，不是一个点：xOf(d) 是这天的起点，
  * 这天的区间是 [xOf(d), xOf(d+1))。刻度画在点上，金线盖满整段。
+ *
+ * width 是轴的可见长度，只到「今天」那一天结束；后面那些还没到的月份仍在
+ * 坐标系里，只是不画出来，好让每一年每一月都保持同一格宽。
  */
 
 export const PXD = 3.6;
+/** 保留给旧断言用，连续日历里已经没有「压空档」这回事 */
 export const MAX_GAP = 320;
 /** 一本书在轴上要占的长度，两轨交错，所以一半就够 */
 export const SLOT = 76;
@@ -21,6 +24,8 @@ export const LANES = 2;
 export const DAY_MS = 86400000;
 /** 日历上最长的月是 31 天，一个月最少按这么宽排 */
 export const MONTH_SLOT = 31;
+/** 放到这个倍数才画日刻度，一倍下只有年与月 */
+export const DAY_ZOOM = 1.6;
 
 export function dayNum(s: string): number {
   const t = Date.parse(s + "T00:00:00Z");
@@ -41,12 +46,13 @@ export interface Scale {
   xOf(day: number): number;
   /** 反查：世界坐标落在哪天，刻度只算看得见的那一段 */
   dayAt(x: number): number;
-  /** 这天占多宽，被压过的空档里会小得多 */
+  /** 这天占多宽 */
   slopeAt(day: number): number;
   first: number;
   last: number;
+  /** 轴的可见长度，到今天结束为止 */
   width: number;
-  /** 一个月在轴上占多长。全轴统一，取过得最满的那个月 */
+  /** 一个月在轴上占多长，全轴统一 */
   monthW: number;
 }
 
@@ -55,19 +61,17 @@ export interface BuildOpts {
   maxGap?: number;
   slot?: number;
   lanes?: number;
+  /** 轴延伸到哪一天，传进来的应是今天的天序号 */
+  until?: number;
 }
 
 interface Month {
-  /** 年 * 12 + 月（0 起），用来算中间空掉几个月 */
   key: number;
   /** 月首那天的序号 */
   start: number;
   /** 月内每天的相对偏移，下标 = 日 - 月首；末尾多一格是整天宽 */
   off: Float64Array;
-  /** 这个月自己需要多宽 */
   natW: number;
-  /** 与上一个月之间的空档 */
-  gap: number;
   x0: number;
 }
 
@@ -83,13 +87,11 @@ const monthFirst = (key: number) =>
  * 日期表由书落的日期构成，传进来什么顺序都行，内部排序去重。
  *
  * 有书的那天至少占「那天的本数 × 一本书的宽 / 轨数」，没书的一天占 pxd。
- * 把这个月里三十二天（含月末）的宽度加起来，就是它自己需要多宽；
- * 全轴取最宽的那个月当统一月宽，别的月份把余下的空白留在月末。
- * 中间整整几个月没读书的，整段压到 maxGap，不然几年空白会把轴撑成荒原。
+ * 把一个月里每天的宽度加起来就是它自己需要多宽，全轴取最宽的那个月定下统一
+ * 月宽，别的月份把自己按同一比例摊开，正好填满一格。
  */
 export function buildScale(days: number[], o: BuildOpts = {}): Scale {
   const pxd = o.pxd ?? PXD;
-  const maxGap = o.maxGap ?? MAX_GAP;
   const slot = o.slot ?? SLOT;
   const lanes = o.lanes ?? LANES;
   const counts = new Map<number, number>();
@@ -108,141 +110,84 @@ export function buildScale(days: number[], o: BuildOpts = {}): Scale {
     };
   }
 
-  const stepOf = (day: number) => Math.max(pxd, ((counts.get(day) || 0) * slot) / lanes);
+  /* 一个月自己需要多宽：每天按 pxd 起算，有书的那天按「本数 × 一本书的宽 ÷ 轨数」
+     再加。这个和只用来定全轴统一的那一格月宽 —— 书多的月份把月宽撑起来，别的
+     月份跟着摊到一样宽，于是从「哪年到哪年」在轴上的长短不因读书多少而失真 */
+  const needOf = (day: number) => Math.max(pxd, ((counts.get(day) || 0) * slot) / lanes);
+  const until = Math.max(o.until ?? ds[ds.length - 1], ds[ds.length - 1]);
+  const startKey = dayParts(ds[0]).y * 12;
+  const endKey = dayParts(until).y * 12 + 11;
 
   const months: Month[] = [];
-  let prevKey = NaN;
-  for (const d of ds) {
-    const key = monthKeyOf(d);
-    if (key === prevKey) continue;
-    prevKey = key;
+  for (let key = startKey; key <= endKey; key++) {
     const start = monthFirst(key);
     const len = monthFirst(key + 1) - start;
-    const off = new Float64Array(len + 1);
     let c = 0;
-    for (let i = 0; i < len; i++) {
-      off[i] = c;
-      c += stepOf(start + i);
-    }
-    off[len] = c;
-    months.push({ key, start, off, natW: c, gap: 0, x0: 0 });
+    for (let i = 0; i < len; i++) c += needOf(start + i);
+    months.push({ key, start, off: new Float64Array(len + 1), natW: c, x0: 0 });
   }
 
-  /* 统一月宽：取过得最满的那个月，且不窄于 31 天 */
   let monthW = pxd * MONTH_SLOT;
   for (const u of months) if (u.natW > monthW) monthW = u.natW;
-
-  /* 每个月都撑满这一格：书少的月份把日子按比例摊开，直到正好占满一个月的宽度；
-     书最满的那个月本来就是满的，比例是 1，书与书的位置原样不动。
-     只留自然宽度的话，稀疏的月份末尾会空出一大截，下个月从那一截之后才开始——
-     看着像是轴上突然多了一段空白，正是要消掉的那种忽长忽短。
-     比例只会大于等于 1，日子只会变宽，封面不会因为撑开而挤在一起。 */
-  for (const u of months) {
-    const f = u.natW > 0 ? monthW / u.natW : 1;
-    if (f !== 1) for (let i = 0; i < u.off.length; i++) u.off[i] *= f;
-    u.natW = monthW;
-  }
-
-  let acc = 0;
+  /* 月内每天一样宽：书只用来定月宽，不把某一天撑开。撑开的那一天会占掉十来天
+     的宽度，而它仍旧只有一个日期，放大到看得见日刻度时那一大片就只有一根刻度，
+     看着就像刻度被吃了。摊平之后每一天正好一格，一天一根，间距均匀 */
   for (let i = 0; i < months.length; i++) {
     const u = months[i];
-    if (i) {
-      const skip = u.key - months[i - 1].key - 1;
-      u.gap = skip > 0 ? Math.min(skip * monthW, maxGap) : 0;
-      acc += u.gap;
-    }
-    u.x0 = acc;
-    acc += monthW;
+    const len = u.off.length - 1;
+    const step = len > 0 ? monthW / len : monthW;
+    for (let j = 0; j <= len; j++) u.off[j] = j * step;
+    u.natW = monthW;
+    u.x0 = i * monthW;
   }
 
-  const first = ds[0];
-  const last = ds[ds.length - 1];
-  const width = acc;
-  const head = months[0];
+  const gridW = months.length * monthW;
+  const first = months[0].start;
+  const last = until;
   const tail = months[months.length - 1];
-  const xOfFirst = head.x0 + head.off[first - head.start];
-  const xOfLast = tail.x0 + tail.off[last - tail.start];
-
-  /** 二分：day 落在第几个月。落在两月之间的空档里就归左边那个月 */
-  const monthAt = (day: number) => {
-    let lo = 0;
-    let hi = months.length - 1;
-    while (lo < hi) {
-      const m = (lo + hi + 1) >> 1;
-      if (months[m].start <= day) lo = m;
-      else hi = m - 1;
-    }
-    return lo;
-  };
-
-  /** 月尾到下月首之间那截空档里，day 落在几成 */
-  const gapFrac = (i: number, day: number) => {
-    const u = months[i];
-    const nu = months[i + 1];
-    if (!nu) return 0;
-    const d0 = u.start + u.off.length - 1;
-    return Math.min(1, Math.max(0, (day - d0) / Math.max(1, nu.start - d0)));
-  };
+  /** 最后一月的最后一天。off 末尾多一格是下月一号，所以要减二 */
+  const tailEnd = tail.start + tail.off.length - 2;
 
   const xOf = (day: number) => {
     if (!Number.isFinite(day)) return 0;
-    if (day < first) return xOfFirst + (day - first) * pxd;
-    if (day > last) return xOfLast + (day - last) * pxd;
-    const i = monthAt(day);
+    const i = monthKeyOf(day) - startKey;
+    if (i < 0) return (day - first) * pxd;
+    if (i >= months.length) return gridW + (day - tailEnd - 1) * pxd;
     const u = months[i];
     const k = day - u.start;
-    if (k >= 0 && k < u.off.length) return u.x0 + u.off[k];
-    const nu = months[i + 1];
-    if (!nu) return u.x0 + monthW + (day - (u.start + u.off.length - 1)) * pxd;
-    return u.x0 + monthW + gapFrac(i, day) * nu.gap;
+    if (k < 0) return u.x0 + k * pxd;
+    if (k < u.off.length) return u.x0 + u.off[k];
+    return u.x0 + monthW + (k - (u.off.length - 1)) * pxd;
   };
 
   const dayAt = (x: number) => {
-    if (x <= xOfFirst) return Math.round(first + (x - xOfFirst) / pxd);
-    if (x >= xOfLast) return Math.round(last + (x - xOfLast) / pxd);
-    let lo = 0;
-    let hi = months.length - 1;
-    while (lo < hi) {
-      const m = (lo + hi + 1) >> 1;
-      if (months[m].x0 <= x) lo = m;
-      else hi = m - 1;
-    }
-    const u = months[lo];
+    if (x <= 0) return Math.round(first + x / pxd);
+    if (x >= gridW) return Math.round(tailEnd + 1 + (x - gridW) / pxd);
+    const i = Math.min(months.length - 1, Math.floor(x / monthW));
+    const u = months[i];
     const rel = x - u.x0;
-    if (rel <= u.natW) {
-      const off = u.off;
-      let a = 0;
-      let b = off.length - 1;
-      while (b - a > 1) {
-        const m = (a + b) >> 1;
-        if (off[m] <= rel) a = m;
-        else b = m;
-      }
-      const w = off[b] - off[a];
-      return Math.round(u.start + a + (w > 0 ? (rel - off[a]) / w : 0));
+    const off = u.off;
+    let a = 0;
+    let b = off.length - 1;
+    while (b - a > 1) {
+      const m = (a + b) >> 1;
+      if (off[m] <= rel) a = m;
+      else b = m;
     }
-    /* 月尾那段空白不是日子，算作这个月结束的那一刻 */
-    if (rel <= monthW) return u.start + u.off.length - 1;
-    const nu = months[lo + 1];
-    if (!nu) return Math.round(last + (x - xOfLast) / pxd);
-    const d0 = u.start + u.off.length - 1;
-    const t = nu.gap > 0 ? (rel - monthW) / nu.gap : 0;
-    return Math.round(d0 + Math.min(1, Math.max(0, t)) * (nu.start - d0));
+    const w = off[b] - off[a];
+    return Math.round(u.start + a + (w > 0 ? (rel - off[a]) / w : 0));
   };
 
   const slopeAt = (day: number) => {
-    if (day < first || day > last) return pxd;
-    const i = monthAt(day);
+    const i = monthKeyOf(day) - startKey;
+    if (i < 0 || i >= months.length) return pxd;
     const u = months[i];
     const k = day - u.start;
     if (k >= 0 && k < u.off.length - 1) return u.off[k + 1] - u.off[k];
-    const nu = months[i + 1];
-    if (!nu) return pxd;
-    const d0 = u.start + u.off.length - 1;
-    return nu.gap / Math.max(1, nu.start - d0);
+    return pxd;
   };
 
-  return { xOf, dayAt, slopeAt, first, last, width, monthW };
+  return { xOf, dayAt, slopeAt, first, last, width: Math.min(xOf(last + 1), gridW), monthW };
 }
 
 export interface Tick {
@@ -250,81 +195,91 @@ export interface Tick {
   kind: "year" | "month" | "day";
   /** 空串表示只画一道刻度线，不写字 */
   label: string;
-  /** 落在星期天的那几根日刻度，画得粗一点，好看出一个月走到哪了 */
-  sun?: boolean;
-  /** 这根刻度管的那一段有多宽（世界坐标）。字挂在这一段的正中，不挂在线上 */
+  /** 这根刻度管的那一段有多宽（世界坐标） */
   w: number;
 }
 
-/** 长条两端的几号。只写数字，不带「日」，月份由上头的月刻度交代 */
+/** 金线两头的日期，写成 05-12 这样的月-日，不带年份也不带「日」字 */
 export function dayLabel(day: number): string {
   const p = dayParts(day);
-  return Number.isFinite(p.d) ? String(p.d) : "";
+  return Number.isFinite(p.m) && Number.isFinite(p.d)
+    ? String(p.m).padStart(2, "0") + "-" + String(p.d).padStart(2, "0")
+    : "";
 }
 
-/** 这天是不是星期天。1 倍下一格才几像素，日号写不下，只把周日加粗 */
+/** 这天是不是星期天。刻度已经不按星期分组，留着给别的用处 */
 export function isSunday(day: number): boolean {
   return new Date(day * DAY_MS).getUTCDay() === 0;
 }
 
-/** 下个月一号 */
 function nextMonthFirst(y: number, m: number): number {
   return m === 12 ? dayNum(`${y + 1}-01-01`) : dayNum(`${y}-${String(m + 1).padStart(2, "0")}-01`);
 }
 
 /**
- * 看得见的那一段里的刻度。放得越大刻度越细：
- * 一年拉不开只标年，一月有三十来像素标月，一天有十二像素就上日刻度。
- * 刻度线画在天的起点上 —— 相邻两根线之间正好是那一天，
- * 所以字不压在线下，摆在它管的那一段的正中。
- * 日刻度一律不写日号，只把星期天那几根画粗，看着像一个月的骨架；
- * 空档被压过的地段一天只有零点几像素，自然只剩年线。
+ * 看得见的那一段里的刻度。
+ *
+ * 轴上有字的是月与年：月写「5月」，年写一枚四位年份。日刻度只画一道短线，
+ * 不写字 —— 一天一格，写满就是一排「05-12」，把轴糊成一片。
+ *
+ * 日刻度只有一条门槛：倍率到 DAY_ZOOM 以上，视野里的每一天都画一根，一根不少；
+ * 不到就一根都不画。不按「屏幕上挤不挤得下」挑，也不因为月初有月线就跳过 ——
+ * 那套挑着画的逻辑删了，缺一根都算漏。
+ *
+ * 一月一号同时出月刻度与年刻度，一月和别的月一样写「1月」，年份另挂在自己
+ * 那道年线上，表示这道线之后的一年归它。
+ *
+ * 年刻度按整年算：这一年只要和视野有交集就挂上。只认年线本身在不在视野里
+ * 的话，滚到二三月这枚年份就没了。
  */
 export function ticks(sc: Scale, d0: number, d1: number, k = 1): Tick[] {
   const out: Tick[] = [];
-  /* 阈值与标签宽度都是屏幕像素，x 是世界坐标，比的时候先乘上 k */
   const vs = Math.min(2.2, k);
-  const showLabel = vs >= 0.45;
-  let markX = -1e9;
-  let labelRight = -1e9;
+  const showLabel = vs >= 0.15;
+  const showDays = k >= DAY_ZOOM;
+  /* 月份自己一把避让尺子：密处的月名挤不下时连那根月线一起省掉，
+     一根没有字的月线说不清管的是哪个月 */
+  let monthRight = -1e9;
   const from = Math.floor(d0) - 1;
   const to = Math.ceil(d1) + 1;
+  const xFrom = sc.xOf(from);
+  const xTo = sc.xOf(to);
+
+  for (let y = dayParts(from).y; y <= dayParts(to).y; y++) {
+    const start = dayNum(`${y}-01-01`);
+    const end = dayNum(`${y + 1}-01-01`);
+    const wx = sc.xOf(start);
+    if (sc.xOf(end) > xFrom && wx < xTo) {
+      out.push({ x: wx, w: Math.max(0, sc.xOf(end) - wx), kind: "year", label: showLabel ? String(y) : "" });
+    }
+  }
+
   for (let d = from; d <= to; d++) {
     const p = dayParts(d);
-    const isYear = p.m === 1 && p.d === 1;
     const isMonth = p.d === 1;
     const wx = sc.xOf(d);
     const sx = wx * k;
-    if (sx - markX < 4) continue;
-    let kind: Tick["kind"] = "day";
-    let label = "";
-    let span = 0;
-    if (isYear) {
-      kind = "year";
-      label = String(p.y);
-      span = sc.xOf(dayNum(`${p.y + 1}-01-01`)) - wx;
-    } else if (isMonth) {
-      span = sc.xOf(nextMonthFirst(p.y, p.m)) - wx;
-      if (span * k < 14) continue;
-      kind = "month";
-      if (span * k >= 34) label = p.m + "月";
-    } else {
-      span = sc.slopeAt(d);
-      if (span * k < 10) continue;
-      kind = "day";
-    }
-    markX = sx;
-    let text = "";
-    if (label && showLabel) {
-      /* 标签宽度按视觉倍数估，字多大就多宽，不然放大了还挨着 */
-      const w = (label.length * 6.4 + 6) * vs;
-      if (sx >= labelRight + 4) {
-        text = label;
-        labelRight = sx + w;
+
+    if (isMonth) {
+      const span = sc.xOf(nextMonthFirst(p.y, p.m)) - wx;
+      const label = span * k >= 34 ? p.m + "月" : "";
+      if (label && showLabel) {
+        const w = (label.length * 6.4 + 6) * vs;
+        if (sx >= monthRight + 4) {
+          monthRight = sx + w;
+          out.push({ x: wx, w: Math.max(0, span), kind: "month", label });
+        }
       }
     }
-    out.push({ x: wx, w: Math.max(0, span), kind, label: text, sun: kind === "day" && isSunday(d) });
+
+    /* 日刻度只是一道线，不写日期。放大够了就天天都画，一根不落：
+       不挑间距、不看那天有多宽、月初也照画（月线压在上面而已） */
+    if (showDays) {
+      out.push({ x: wx, w: Math.max(0, sc.slopeAt(d)), kind: "day", label: "" });
+    }
   }
+  /* 年刻度先按整年拎出来，排回去才按位置站队 */
+  out.sort((a, b) => a.x - b.x);
   return out;
 }
 
@@ -354,16 +309,7 @@ export interface YearBand {
   n: number;
 }
 
-/**
- * 导航条按年等分：一年一格，不管那一年读了三十本还是一本。
- *
- * 真实的轴不是等分的 —— 密集的月份会被「当天本数 × 一格长」撑开，几年没读书
- * 的空洞又被压到 320 像素。照真实长度画导航条的话，2018 那一片能占掉半条，
- * 早年只剩一丝，想拖到某一年根本瞄不准。改成按年等分，每格的长度就与读书多少
- * 无关了，读书多少改由格子里那根柱子的高低交代。
- *
- * 中间那些一本没读的年份也留着，一年一格不断档，那几年空白一眼就看得出来。
- */
+/** 导航条按年等分。轴本身现在也是一年十二格，两者天然对得上 */
 export function yearBands(anchors: string[], sc: Scale): YearBand[] {
   const cnt = new Map<number, number>();
   let lo = Infinity;
@@ -389,36 +335,138 @@ export function yearBands(anchors: string[], sc: Scale): YearBand[] {
   return out;
 }
 
-/** 世界坐标落在导航条的哪个位置（0–1）。年内在两条年界线之间线性插值 */
-export function navFrac(bands: YearBand[], x: number): number {
-  const n = bands.length;
-  if (!n) return 0;
-  const w = 1 / n;
-  for (let i = 0; i < n; i++) {
-    const b = bands[i];
-    if (x < b.x1 || i === n - 1) {
-      const t = b.x1 > b.x0 ? (x - b.x0) / (b.x1 - b.x0) : 0;
-      return w * (i + Math.min(1, Math.max(0, t)));
+/** 导航条上那个滑块：左沿与宽，都是「条铺开的那一段」的 0–1 */
+export interface NavThumb {
+  l: number;
+  w: number;
+}
+
+/**
+ * 导航条铺开的那一段世界坐标。默认整条轴；在上头选了一段年份，就只铺那几年 ——
+ * 二十几年摊在一千多像素里，一像素跨着半个月，金线挤成亮带；只铺三五年，
+ * 同样的条长全给这几年，一像素跨几个钟头，逐本也挑得动。
+ */
+export interface NavRange {
+  a: number;
+  b: number;
+}
+
+/** 没选区间时铺整条轴 */
+export function fullRange(total: number): NavRange {
+  return { a: 0, b: Math.max(1, total) };
+}
+
+/**
+ * 没选区间时条铺到哪儿。轴到头之后还可能压着几本：同一天挤好几本时封面会往后
+ * 推出去一截，那些书的落点在轴长之外。留一点余量，免得把末端那几本从条上筛掉。
+ */
+export function navFull(list: { start: string; end: string; anchor: string }[], sc: Scale): NavRange {
+  let end = Math.max(1, sc.width);
+  for (const e of list) {
+    const d = midDay(e);
+    if (Number.isFinite(d)) end = Math.max(end, sc.xOf(d) + 120);
+  }
+  return { a: 0, b: end };
+}
+
+/**
+ * 年份区间换成世界坐标：从起点年一月一号，到终点年十二月三十一号，掐在轴两头之内。
+ * 上端留的这点余量跟 navFull 一样：末年最后那几本可能压在轴尾上，硬掐会把它们滤掉。
+ * 不再多留 —— 区间铺到今年时，条该跟「全部」一样到头，不该伸进还没到的月份。
+ */
+export function yearRange(sc: Scale, y0: number, y1: number): NavRange {
+  const lo = Math.min(y0, y1);
+  const hi = Math.max(y0, y1);
+  const clampX = (v: number) => Math.min(sc.width + 120, Math.max(0, v));
+  const a = clampX(sc.xOf(dayNum(lo + "-01-01")));
+  const b = clampX(sc.xOf(dayNum(hi + 1 + "-01-01")));
+  return b - a < 1 ? { a, b: a + 1 } : { a, b };
+}
+
+/**
+ * 标准进度条那套：滑块左沿 = 视野起点在条上的分位，滑块宽 = 视野占条的分位。
+ * 视野本来就被夹在轴里，所以左沿天然不会超过 1 − w。
+ *
+ * 这里没有「窗口」这回事。条铺的是一段固定的世界坐标（默认整条轴），条长与刻度
+ * 都不随视野变，于是拖动是纯线性的：手挪多少像素，滑块挪多少像素，内容也挪同样
+ * 多的像素。以前每帧拿视野中心重算窗口，等于边走边换尺子，光标停在同一处分位指
+ * 向的时间每帧都变，拖起来就飞 —— 这条链现在从根上断了。
+ *
+ * 视野比铺开的那段还宽时（缩到很小、又把区间选得很短），滑块满条，贴在最左。
+ */
+export function navThumb(r: NavRange, v0: number, view: number): NavThumb {
+  const d = Math.max(1, r.b - r.a);
+  const w = Math.min(1, Math.max(1e-5, view / d));
+  const l = Math.min(1 - w, Math.max(0, (v0 - r.a) / d));
+  return { l, w };
+}
+
+/** 条上的分位 → 世界坐标 */
+export function navX(r: NavRange, p: number): number {
+  const c = Math.min(1, Math.max(0, p));
+  return r.a + c * Math.max(1, r.b - r.a);
+}
+
+/** 世界坐标 → 条上的分位 */
+export function navAt(r: NavRange, x: number): number {
+  const d = Math.max(1, r.b - r.a);
+  return Math.min(1, Math.max(0, (x - r.a) / d));
+}
+
+/** 世界坐标落在哪一年：给浮出来的那行字用 */
+export function navBandAt(bands: YearBand[], x: number): YearBand | null {
+  if (!bands.length) return null;
+  for (const b of bands) if (x < b.x1) return b;
+  return bands[bands.length - 1];
+}
+
+export interface NavMark {
+  id: string;
+  /** 落在条上的分位（0–1）。条上那一层按它摆 */
+  p: number;
+  /** 世界坐标，比远近、反查落点都用它 */
+  x: number;
+  /** 气泡里那行字：书名 · 月-日 */
+  text: string;
+}
+
+/**
+ * 每本书落在条上的哪一个位置。
+ *
+ * 导航条以前只按年画柱子，同一年的书挤成一根，落点是「哪一年」，一年在轴上
+ * 七八千像素、在条上只有几十像素，拖起来对不准。改成每本一根金色细线，
+ * 条上哪一处有书一眼看得出，拖着对齐它就落到那本书那一带。
+ *
+ * 位置按封面落点算（起止的中点），与轴上的摆法同一个日期，两者不容易错位。
+ * range 是条铺开的那一段：区间外的书不给线，否则全叠在条的两头。
+ */
+export function navMarks(
+  list: { id: string; title: string; start: string; end: string; anchor: string }[],
+  sc: Scale,
+  range: NavRange
+): NavMark[] {
+  const out: NavMark[] = [];
+  for (const e of list) {
+    const d = midDay(e);
+    if (!Number.isFinite(d)) continue;
+    const x = sc.xOf(d);
+    if (x < range.a || x > range.b) continue;
+    out.push({ id: e.id, p: navAt(range, x), x, text: e.title + " · " + dayLabel(d) });
+  }
+  out.sort((a, b) => a.p - b.p);
+  return out;
+}
+
+/** 世界坐标 x 附近最近的那本书；tol 是按世界坐标算的容差。没有就返回 null */
+export function nearestMark(marks: NavMark[], x: number, tol: number): NavMark | null {
+  let best: NavMark | null = null;
+  let bd = Infinity;
+  for (const m of marks) {
+    const d = Math.abs(m.x - x);
+    if (d < bd) {
+      bd = d;
+      best = m;
     }
   }
-  return 1;
-}
-
-/** 导航条位置反查世界坐标，拖动与点击都用它 */
-export function navX(bands: YearBand[], p: number): number {
-  const n = bands.length;
-  if (!n) return 0;
-  const w = 1 / n;
-  const i = Math.min(n - 1, Math.max(0, Math.floor(p / w)));
-  const b = bands[i];
-  const t = Math.min(1, Math.max(0, (p - i * w) / w));
-  return b.x0 + (b.x1 - b.x0) * t;
-}
-
-/** 哪一年：给浮出来的那行字用 */
-export function navBand(bands: YearBand[], p: number): YearBand | null {
-  const n = bands.length;
-  if (!n) return null;
-  const i = Math.min(n - 1, Math.max(0, Math.floor(p * n)));
-  return bands[i];
+  return best && bd <= tol ? best : null;
 }
