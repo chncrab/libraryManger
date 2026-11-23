@@ -2,6 +2,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -91,6 +92,14 @@ const ReadFeed = forwardRef<ReadTimelineHandle, Props>(function ReadFeed(
   const [win, setWin] = useState({ a: first, b: first, h: 0 });
   const [preview, setPreview] = useState<number | null>(null);
   const wantGroup = useRef<number | null>(null);
+  const monthRef = useRef(month);
+  monthRef.current = month;
+  /* 滚轮翻月：一次手势只翻一次，安静下来才解锁，惯性尾波不会连跳几个月 */
+  const flipRef = useRef({ last: 0, done: false });
+  /* 翻月后的落点：等新月份的书目 DOM 提交完再设置 scrollTop */
+  const pendingEdge = useRef<{ key: number; edge: "top" | "bottom" } | null>(null);
+  /* scrollGroup 的 rAF 版本号，翻月后作废旧 commit 的定位 */
+  const scrollEpoch = useRef(0);
   const anchorZoom = useRef(false);
   const anchorRef = useRef<{ wx: number; py: number } | null>(null);
 
@@ -169,9 +178,24 @@ const ReadFeed = forwardRef<ReadTimelineHandle, Props>(function ReadFeed(
     const d = wantGroup.current;
     if (d == null) return;
     wantGroup.current = null;
-    const id = requestAnimationFrame(() => scrollGroup(d));
+    const epoch = scrollEpoch.current;
+    const id = requestAnimationFrame(() => {
+      if (epoch !== scrollEpoch.current) return;
+      scrollGroup(d);
+    });
     return () => cancelAnimationFrame(id);
   }, [month, focus, groups]);
+
+  /* 翻月落到月初 / 月末：等这个月的书目 DOM 提交后再设 scrollTop，避免被旧的 scrollGroup 覆盖 */
+  useLayoutEffect(() => {
+    const p = pendingEdge.current;
+    if (!p) return;
+    pendingEdge.current = null;
+    if (p.key !== month) return;
+    const box = booksRef.current;
+    if (!box) return;
+    box.scrollTop = p.edge === "bottom" ? box.scrollHeight : 0;
+  }, [month, groups]);
 
   useImperativeHandle(
     ref,
@@ -256,7 +280,8 @@ const ReadFeed = forwardRef<ReadTimelineHandle, Props>(function ReadFeed(
         b: Math.min(g.last, sc.dayAt(botW)),
         h: sc.slopeAt(center) * z
       });
-      setPreview(center);
+      /* 程序化滚动（翻月 / 提交定位）不算预览，免得留下过期的浮标 */
+      if (performance.now() >= skipScroll.current) setPreview(center);
       navRef.current?.setView(topW, botW);
       if (performance.now() < skipScroll.current) return;
       window.clearTimeout(previewTimer.current);
@@ -297,6 +322,53 @@ const ReadFeed = forwardRef<ReadTimelineHandle, Props>(function ReadFeed(
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  /** 翻到紧邻的自然月，边界夹在既有年份区间里，空月也照走不跳 */
+  const flipMonth = (dir: 1 | -1): boolean => {
+    const b = boundsRef.current;
+    const key = clampMonth(monthRef.current, b.lo, b.hi) + dir;
+    if (key < b.lo || key > b.hi) return false;
+    const start = monthFirstOfKey(key);
+    const day = dir > 0 ? start : start + monthLength(start) - 1;
+    window.clearTimeout(previewTimer.current);
+    setPreview(null);
+    wantGroup.current = null;
+    scrollEpoch.current++;
+    pendingEdge.current = { key, edge: dir > 0 ? "top" : "bottom" };
+    commitRef.current(day, { ruler: true, group: false });
+    return true;
+  };
+
+  /* 书目区滚轮：平常走原生滚动，滚到边后的下一次同向动作才翻月，Ctrl/Meta 留给系统 */
+  useEffect(() => {
+    const el = booksRef.current;
+    if (!el) return;
+    const g = flipRef.current;
+    const onWheel = (ev: WheelEvent) => {
+      if (ev.ctrlKey || ev.metaKey) return;
+      if (ev.deltaY === 0 || Math.abs(ev.deltaY) < Math.abs(ev.deltaX)) return;
+      const now = performance.now();
+      const gap = now - g.last;
+      g.last = now;
+      if (gap >= 180) g.done = false;
+      /* 同一次手势的尾波：翻过月就只吞掉，不再翻 */
+      if (g.done) {
+        if (ev.cancelable) ev.preventDefault();
+        return;
+      }
+      const dir: 1 | -1 = ev.deltaY > 0 ? 1 : -1;
+      const max = el.scrollHeight - el.clientHeight;
+      /* 内容不足一屏 / 空月：两个方向都算到边 */
+      const atEdge = max <= 2 || (dir > 0 ? el.scrollTop >= max - 2 : el.scrollTop <= 2);
+      if (!atEdge) return;
+      if (!flipMonth(dir)) return;
+      g.done = true;
+      if (ev.cancelable) ev.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const moveMonth = (delta: number) => {

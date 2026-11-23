@@ -27,6 +27,14 @@
 .rd-goto:focus { outline: none; border-color: var(--acc); }
 .rd-to-cal { flex: none; }
 .rd-calscroll { padding: 0; overflow: auto; }
+/* 月历按容器实际高度铺满，外层滚动留给全年视图 */
+.rd-calscroll:has(> .rd-cal[data-mode="month"]) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.rd-calscroll:has(> .rd-cal[data-mode="month"]) > .rd-cal { flex: 1 1 auto; }
 .rd-axscroll,
 .rd-feedscroll { padding: 0; overflow: hidden; height: 100%; min-height: 0; }
 
@@ -44,12 +52,6 @@
 
 /* ---- 日历 ---- */
 .rd-cal {
-  --rd-cal-cell: 13px;
-  --rd-cal-gap: 2px;
-  --rd-cal1: color-mix(in srgb, var(--acc) 20%, var(--bg3));
-  --rd-cal2: color-mix(in srgb, var(--acc) 38%, var(--bg3));
-  --rd-cal3: color-mix(in srgb, var(--acc) 60%, var(--bg3));
-  --rd-cal4: color-mix(in srgb, var(--acc) 86%, var(--bg3));
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -60,11 +62,38 @@
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: 12px 16px;
   flex-wrap: wrap;
 }
-.rd-cal-yearbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rd-cal-yearbar { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
 .rd-cal-yearbar .mini:disabled { opacity: 0.35; cursor: default; }
+.rd-cal-modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.rd-cal-modebtn {
+  height: 24px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rd-cal-modebtn:hover { color: var(--fg); background: var(--bg3); }
+.rd-cal-modebtn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--acc) 24%, var(--bg3));
+  color: var(--fg);
+  font-weight: 600;
+}
+.rd-cal-modebtn:focus-visible { outline: 2px solid var(--acc2); outline-offset: 1px; }
 .rd-cal-yearpick select {
   height: 24px;
   border: 1px solid var(--line2);
@@ -79,62 +108,26 @@
 .rd-cal-none { color: var(--fg3); }
 .rd-cal-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   min-height: 0;
   align-items: start;
 }
-.rd-cal-board { min-width: 0; }
-.rd-cal-main { display: flex; min-width: 0; }
-.rd-cal-week {
-  flex: none;
-  display: grid;
-  grid-template-rows: repeat(7, var(--rd-cal-cell));
-  gap: var(--rd-cal-gap);
-  padding-top: calc(16px + var(--rd-cal-gap));
-  padding-right: 6px;
-  color: var(--fg3);
-  font-size: 9.5px;
-  text-align: right;
-}
-.rd-cal-week span { height: var(--rd-cal-cell); line-height: var(--rd-cal-cell); }
-.rd-cal-scroll {
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 4px;
-}
-.rd-cal-scroll::-webkit-scrollbar { height: 8px; }
-.rd-cal-grid {
-  display: grid;
-  grid-template-rows: 16px repeat(7, var(--rd-cal-cell));
-  gap: var(--rd-cal-gap);
-  width: max-content;
-}
-.rd-cal-month {
-  font-size: 9.5px;
-  line-height: 16px;
-  color: var(--fg3);
-  white-space: nowrap;
-  overflow: visible;
-}
 .rd-cal-cell {
   display: block;
-  width: var(--rd-cal-cell);
-  height: var(--rd-cal-cell);
+  min-width: 0;
   padding: 0;
   border: 0;
   border-radius: 3px;
-  background: var(--bg3);
+  background: transparent;
+  color: var(--fg);
   cursor: pointer;
   position: relative;
-  transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
-.rd-cal-cell:hover { transform: scale(1.18); }
-.rd-cal-cell.lvl1 { background: var(--rd-cal1); }
-.rd-cal-cell.lvl2 { background: var(--rd-cal2); }
-.rd-cal-cell.lvl3 { background: var(--rd-cal3); }
-.rd-cal-cell.lvl4 { background: var(--rd-cal4); }
+/* 月历与全年共用同一条色阶：--rd-cal-fill 由 ReadCalendar 按本数与起止端点算好 */
+.rd-cal-cell[data-n]:not([data-n="0"]) {
+  background: color-mix(in srgb, var(--acc) var(--rd-cal-fill, 12%), var(--bg2));
+}
 .rd-cal-cell.today { box-shadow: inset 0 0 0 1px var(--fg2); }
 .rd-cal-cell.sel {
   box-shadow: inset 0 0 0 1px var(--bg), 0 0 0 2px var(--acc2);
@@ -146,41 +139,39 @@
   opacity: 0.38;
   cursor: default;
 }
-.rd-cal-cell.future:hover { transform: none; }
 .rd-cal-cell:focus-visible { outline: 2px solid var(--acc2); outline-offset: 1px; }
-.rd-cal-legend { display: flex; align-items: center; gap: 4px; margin: 8px 0 0 28px; font-size: 10px; color: var(--fg3); }
+.rd-cal-legend { display: flex; align-items: center; gap: 4px; margin: 2px 0 0; font-size: 10px; color: var(--fg3); }
 .rd-cal-swatch { display: block; width: 11px; height: 11px; border-radius: 2px; background: var(--bg3); }
-.rd-cal-swatch.lvl1 { background: var(--rd-cal1); }
-.rd-cal-swatch.lvl2 { background: var(--rd-cal2); }
-.rd-cal-swatch.lvl3 { background: var(--rd-cal3); }
-.rd-cal-swatch.lvl4 { background: var(--rd-cal4); }
 .rd-cal-legend-t { margin-left: 6px; }
 .rd-cal-books {
-  border-left: 1px solid var(--line);
-  padding-left: 16px;
+  border-top: 1px solid var(--line);
+  padding: 12px 0 0;
   min-width: 0;
-  max-height: min(62vh, 560px);
   display: flex;
   flex-direction: column;
 }
 .rd-cal-bhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; }
 .rd-cal-bhead b { display: block; font-size: 13px; font-weight: 600; }
 .rd-cal-bhead span { display: block; font-size: 10.5px; color: var(--fg3); }
-.rd-cal-blist { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
+.rd-cal-blist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px;
+}
 .rd-cal-book {
   display: flex;
   gap: 8px;
   align-items: flex-start;
   text-align: left;
   padding: 6px;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: transparent;
+  background: var(--bg2);
   color: var(--fg);
   cursor: pointer;
   min-width: 0;
 }
-.rd-cal-book:hover { background: var(--bg2); border-color: var(--line); }
+.rd-cal-book:hover { background: var(--bg3); border-color: var(--line2); }
 .rd-cal-cover { flex: none; width: 28px; height: 40px; border-radius: 3px; overflow: hidden; background: var(--bg4); }
 .rd-cal-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .rd-cal-btxt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -189,6 +180,473 @@
 .rd-cal-br { font-size: 10.5px; color: var(--acc2); }
 .rd-cal-empty { color: var(--fg3); font-size: 11.5px; padding: 10px 0; }
 .rd-cal-empty p { margin: 4px 0; }
+
+/* ---- 月历：按可用宽度铺满的七列方格 ---- */
+.rd-cal-monthview { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.rd-cal-weekhead {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+.rd-cal-weekhead span { padding-left: 6px; }
+.rd-cal-monthgrid {
+  --rd-cal-day-gap: 6px;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: var(--rd-cal-day-gap);
+  min-width: 0;
+  min-height: 0;
+}
+.rd-cal-pad { display: block; min-width: 0; }
+.rd-cal-monthgrid .rd-cal-cell {
+  box-sizing: border-box;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 7px 7px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 3px;
+  overflow: visible;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--fg);
+}
+.rd-cal-monthgrid .rd-cal-cell:hover {
+  border-color: var(--line2);
+}
+.rd-cal-monthgrid .rd-cal-cell[data-n="0"]:hover { background: var(--bg3); }
+.rd-cal-monthgrid .rd-cal-cell.today { box-shadow: inset 0 0 0 1px var(--fg2); }
+.rd-cal-monthgrid .rd-cal-cell.sel {
+  box-shadow: inset 0 0 0 1px var(--bg2), 0 0 0 2px var(--acc2);
+  z-index: 2;
+}
+.rd-cal-monthgrid .rd-cal-cell.future {
+  background: transparent;
+  border: 1px dashed var(--line);
+  opacity: 0.45;
+}
+.rd-cal-monthgrid .rd-cal-cell.future:hover {
+  background: transparent;
+  border-color: var(--line);
+}
+.rd-cal-dnum {
+  font-size: clamp(11px, 1.1vw, 16px);
+  line-height: 1.15;
+  font-weight: 600;
+  color: var(--fg2);
+  font-variant-numeric: tabular-nums;
+}
+.rd-cal-cell.today .rd-cal-dnum { color: var(--acc2); }
+.rd-cal-cell.sel .rd-cal-dnum { color: var(--fg); }
+.rd-cal-bks { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; }
+.rd-cal-bk {
+  display: block;
+  min-width: 0;
+  font-size: clamp(10px, 1vw, 13px);
+  line-height: 1.25;
+  color: var(--fg2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rd-cal-more {
+  display: block;
+  font-size: clamp(10px, 0.9vw, 12px);
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--acc2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rd-cal-more.m2,
+.rd-cal-more.m1 { display: none; }
+
+/* 同书连读细线：贴在格底，压在背景与色阶之上、文字之下；不接鼠标事件。
+   同一行相邻两格的线各向缝隙里探出几像素，看起来是一条；跨周/跨月时
+   prev/next 不成立，线在端点收圆，下一行同色重新起头。 */
+.rd-cal-runs {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  height: 10px;
+  pointer-events: none;
+  z-index: 0;
+}
+.rd-cal-run {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--rd-run-lane, 0) * 3px);
+  height: 2px;
+  border-radius: 2px;
+  background: hsl(var(--rd-run-h, 210) 52% 50%);
+  opacity: 0.62;
+}
+.rd-cal-run.run-prev { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.rd-cal-run.run-next { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.rd-cal-monthgrid .rd-cal-run.run-prev { left: calc(-4px - var(--rd-cal-day-gap) / 2); }
+.rd-cal-monthgrid .rd-cal-run.run-next { right: calc(-4px - var(--rd-cal-day-gap) / 2); }
+.rd-cal-monthgrid .rd-cal-cell:has(.rd-cal-runs) { padding-bottom: 13px; }
+.rd-cal-cell > .rd-cal-dnum,
+.rd-cal-cell > .rd-cal-bks { position: relative; z-index: 1; }
+
+/* ---- 月历铺满：整张月历吃容器实际高度，工具条、星期、六行格与图例都留在视野内。
+   根节点打 data-mode，仅月历改 flex 尺寸；全年仍按内容增长、由外层滚动。 ---- */
+.rd-cal[data-mode="month"] {
+  box-sizing: border-box;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  min-width: 0;
+  gap: 10px;
+  overflow: hidden;
+}
+.rd-cal[data-mode="month"] .rd-cal-head { flex: none; }
+.rd-cal[data-mode="month"] .rd-cal-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+.rd-cal-monthgrid .rd-cal-bks { min-height: 0; }
+.rd-cal-monthview .rd-cal-legend { flex: none; }
+
+/* 高度不够时先减书名，再减字号与内边距；+N 始终保留 */
+@media (max-width: 1100px), (max-height: 800px) {
+  .rd-cal-monthgrid .rd-cal-bk.b3,
+  .rd-cal-monthgrid .rd-cal-more.m3 { display: none; }
+  .rd-cal-monthgrid .rd-cal-more.m2 { display: block; }
+}
+@media (max-width: 640px), (max-height: 700px) {
+  .rd-cal-monthgrid .rd-cal-bk.b2,
+  .rd-cal-monthgrid .rd-cal-more.m2 { display: none; }
+  .rd-cal-monthgrid .rd-cal-more.m1 { display: block; }
+}
+@media (max-height: 700px) {
+  .rd-cal[data-mode="month"] { padding: 10px 16px 12px; gap: 8px; }
+  .rd-cal[data-mode="month"] .rd-cal-monthgrid .rd-cal-cell { padding: 5px 6px 10px; }
+}
+@media (max-height: 560px) {
+  .rd-cal[data-mode="month"] .rd-cal-monthgrid .rd-cal-cell { padding: 4px 5px 8px; gap: 1px; }
+  .rd-cal[data-mode="month"] .rd-cal-dnum { font-size: 13px; }
+  .rd-cal[data-mode="month"] .rd-cal-bk { font-size: 11px; }
+  .rd-cal[data-mode="month"] .rd-cal-more { font-size: 9.5px; }
+  .rd-cal[data-mode="month"] .rd-cal-legend { font-size: 9px; }
+}
+
+/* ---- 全年：一张纸，十二月三列四行，无月卡边框 ---- */
+.rd-cal-yearview { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.rd-cal-yeargrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px 24px;
+  width: 100%;
+  min-width: 0;
+}
+.rd-cal-year-month {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: auto auto repeat(6, minmax(36px, auto));
+  column-gap: 2px;
+  row-gap: 2px;
+  align-content: start;
+}
+.rd-cal-year-mh {
+  grid-column: 1 / -1;
+  margin: 0 0 3px;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: center;
+}
+.rd-cal-year-week {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  column-gap: 2px;
+  padding-bottom: 3px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--fg2);
+}
+.rd-cal-year-week span { line-height: 16px; text-align: center; }
+.rd-cal-year-month .rd-cal-cell {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 30px;
+  padding: 2px 1px 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.rd-cal-year-month .rd-cal-cell[data-n="0"]:not(:disabled):hover {
+  background: var(--bg3);
+}
+.rd-cal-year-month .rd-cal-cell.today { box-shadow: inset 0 0 0 1px var(--fg2); }
+.rd-cal-year-month .rd-cal-cell.sel {
+  box-shadow: inset 0 0 0 2px var(--acc2);
+  z-index: 2;
+}
+.rd-cal-year-month .rd-cal-cell.future {
+  background: transparent;
+  border: 0;
+  opacity: 0.3;
+}
+.rd-cal-year-month .rd-cal-runs {
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 7px;
+}
+.rd-cal-year-month .rd-cal-run {
+  height: 1.5px;
+  bottom: calc(var(--rd-run-lane, 0) * 2px);
+  border-radius: 1px;
+  opacity: 0.55;
+}
+.rd-cal-year-month .rd-cal-run.run-prev { left: -2px; }
+.rd-cal-year-month .rd-cal-run.run-next { right: -2px; }
+.rd-cal-year-month .rd-cal-dnum {
+  position: relative;
+  z-index: 1;
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 500;
+  color: var(--fg);
+}
+.rd-cal-year-month .rd-cal-cell.today .rd-cal-dnum { color: var(--acc2); font-weight: 700; }
+.rd-cal-year-month .rd-cal-cell.sel .rd-cal-dnum { color: var(--fg); font-weight: 700; }
+
+/* 年格只写端点书：一本压成单行省略，其余 +n；文字在格底连读线之上 */
+.rd-cal-year-month .rd-cal-bks {
+  width: 100%;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px;
+}
+.rd-cal-year-month .rd-cal-bk {
+  font-size: 10px;
+  line-height: 1.1;
+  color: var(--fg2);
+}
+.rd-cal-year-month .rd-cal-more {
+  flex: none;
+  font-size: 9px;
+  line-height: 1.1;
+}
+
+/* 日历书目浮层：挂在 body 上，跟着光标；固定后接鼠标事件并变成可滚动对话框 */
+.rd-cal-hover {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 58;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  padding: 11px 12px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  pointer-events: none;
+  will-change: transform;
+  animation: rdCalHoverIn 0.12s ease-out;
+}
+.rd-cal-hover[data-pinned="true"] {
+  pointer-events: auto;
+  z-index: 70;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+@keyframes rdCalHoverIn { from { opacity: 0; } }
+.rd-cal-hover-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--fg3);
+}
+.rd-cal-hover-head b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg2);
+  font-variant-numeric: tabular-nums;
+}
+.rd-cal-hover-hint {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--fg3);
+}
+.rd-cal-hover-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
+  overflow: hidden;
+}
+.rd-cal-hover[data-pinned="true"] .rd-cal-hover-body {
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+.rd-cal-hover-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+}
+button.rd-cal-hover-card { cursor: pointer; }
+button.rd-cal-hover-card:hover {
+  background: var(--bg4);
+  border-color: var(--line2);
+}
+button.rd-cal-hover-card:hover .rd-cal-hover-t { color: var(--acc2); }
+button.rd-cal-hover-card:focus-visible {
+  outline: 2px solid var(--acc2);
+  outline-offset: 1px;
+}
+.rd-cal-hover-cover {
+  flex: none;
+  align-self: center;
+  width: min(112px, 100%);
+  height: auto;
+  aspect-ratio: 112 / 162;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--fg2) 16%, var(--bg4)) 0 4px, transparent 4px),
+    linear-gradient(140deg, color-mix(in srgb, var(--acc) 24%, var(--bg4)), var(--bg3));
+}
+.rd-cal-hover-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.rd-cal-hover-ph {
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--fg2) 70%, transparent);
+}
+.rd-cal-hover-btxt {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rd-cal-hover-t {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.rd-cal-hover-a,
+.rd-cal-hover-d {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.rd-cal-hover-a {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg3);
+}
+.rd-cal-hover-d {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--fg2);
+  font-variant-numeric: tabular-nums;
+}
+.rd-cal-hover-more {
+  flex: none;
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--acc2);
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .rd-cal-monthgrid { --rd-cal-day-gap: 4px; }
+  .rd-cal-weekhead { gap: 4px; font-size: 10px; }
+  .rd-cal-weekhead span { padding-left: 4px; }
+  .rd-cal-monthgrid .rd-cal-cell { padding: 5px 4px 4px; border-radius: 6px; }
+}
+
+@media (max-width: 1024px) {
+  .rd-cal-yeargrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+}
+
+@media (max-width: 560px) {
+  .rd-cal-yeargrid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .rd-cal-year-month .rd-cal-cell { min-width: 0; }
+}
 
 /* ---- 横排：轴在底部 ---- */
 .rd-hwrap {
@@ -204,7 +662,15 @@
 }
 .rd-hwrap:active { cursor: grabbing; }
 .rd-hwrap .rd-nav { margin: 8px 14px 15px; flex: none; }
-.rd-hstage { position: relative; flex: 1; min-height: 210px; overflow: hidden; --k: 1; }
+.rd-hstage {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  overflow: hidden;
+  --k: 1;
+  --rd-hcover-height: 158px;
+  --rd-hcover-bottom: clamp(82px, 17%, 140px);
+}
 .rd-hrail { position: absolute; inset: 0; will-change: transform; }
 .rd-hline {
   position: absolute;
@@ -266,55 +732,105 @@
 .rd-htk.day { z-index: 4; }
 .rd-htk.day::before { height: 3px; opacity: 0.55; }
 
-/* 真实起止条。位置与宽度都从世界坐标乘 --k 来，日期落点不因拖动/缩放改变 */
-/* 这些是真按钮：只留外观，别让浏览器默认样式与键盘行为叠成第二套 */
-.rd-hbar,
-.rd-hagg,
-.rd-hovf {
+/* 书封保持屏幕尺寸，扑克牌般错开。只抬封面内层，按钮命中范围保持不动。 */
+.rd-hcover-pile {
+  position: absolute;
+  left: calc(var(--wx) * var(--k) * 1px);
+  bottom: var(--rd-hcover-bottom);
+  height: var(--rd-hcover-height);
+}
+.rd-hcover,
+.rd-hcover-more,
+.rd-hagg {
   box-sizing: border-box;
   font: inherit;
   margin: 0;
   appearance: none;
-  -webkit-appearance: none;
 }
-
-.rd-hbar {
+.rd-hcover {
   position: absolute;
-  bottom: 72px;
+  top: 0;
+  width: var(--rd-hcover-width);
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  z-index: 7;
+}
+.rd-hcover:focus-visible { z-index: 12; outline: 2px solid var(--acc2); outline-offset: 2px; }
+.rd-hcover:hover { z-index: 13; }
+.rd-hcover-face {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 12px 10px 12px 15px;
+  overflow: hidden;
+  border-radius: inherit;
+  border: 1px solid var(--line2);
+  background: linear-gradient(90deg, var(--bg4) 0 7px, var(--bg3) 8px 100%);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+  color: var(--fg);
+  text-align: left;
+  pointer-events: none;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.rd-hcover:hover .rd-hcover-face,
+.rd-hcover:focus-visible .rd-hcover-face {
+  transform: translateY(-10px);
+  border-color: var(--acc2);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+.rd-hcover-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.rd-hcover-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.rd-hcover-face img + .rd-hcover-name {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 7px 6px;
+  -webkit-line-clamp: 2;
+  background: rgba(15, 14, 12, 0.8);
+  color: white;
+  font-size: 11px;
+}
+.rd-hcover-more {
+  position: absolute;
+  top: -30px;
+  transform: translateX(-100%);
+  padding: 4px 8px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--acc2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  z-index: 9;
+}
+.rd-hcover-more:hover,
+.rd-hcover-more:focus-visible { border-color: var(--acc2); }
+.rd-hcover-range {
+  position: absolute;
+  bottom: 37px;
   left: calc(var(--wx) * var(--k) * 1px);
   width: calc(var(--ww) * var(--k) * 1px);
-  min-width: 3px;
-  height: 22px;
-  border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--acc2) 58%, var(--line2));
-  background: color-mix(in srgb, var(--acc) 18%, var(--bg2));
-  color: var(--fg);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 5px;
-  overflow: hidden;
-  cursor: pointer;
+  height: 3px;
+  background: var(--acc2);
+  pointer-events: none;
   z-index: 5;
 }
-.rd-hbar.lane1 { bottom: 106px; }
-.rd-hbar:hover,
-.rd-hbar:focus-visible {
-  background: color-mix(in srgb, var(--acc) 30%, var(--bg2));
-  border-color: var(--acc2);
-  outline: none;
-}
-.rd-hbar-t {
-  font-size: 10.5px;
-  line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-.rd-hbar-d0,
-.rd-hbar-d1 { font-size: 9px; color: var(--fg3); font-variant-numeric: tabular-nums; flex: none; }
 
 /* 读完标记。拉远时按年/月，近时按天；同一天 26 本只有一个数 */
 .rd-hagg {
@@ -355,41 +871,6 @@
 .rd-hagg.day:focus-visible b { outline: 1px solid var(--fg2); }
 .rd-hagg:hover,
 .rd-hagg:focus-visible { border-color: var(--acc2); color: var(--fg); outline: none; }
-.rd-hovf {
-  position: absolute;
-  bottom: 64px;
-  left: calc(var(--wx) * var(--k) * 1px);
-  transform: translateX(-50%);
-  z-index: 7;
-  display: flex;
-  align-items: baseline;
-  gap: 1px;
-  padding: 2px 5px;
-  border-radius: 9px;
-  border: 1px dashed var(--red);
-  background: var(--bg2);
-  color: var(--red);
-  cursor: pointer;
-}
-.rd-hovf b { font-size: 10px; }
-.rd-hovf span { font-size: 9px; }
-.rd-hovf:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
-.rd-hedge {
-  position: absolute;
-  bottom: 42px;
-  width: 18px;
-  height: 70px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg3);
-  background: linear-gradient(90deg, color-mix(in srgb, var(--bg) 78%, transparent), transparent);
-  pointer-events: none;
-  z-index: 8;
-  font-size: 15px;
-}
-.rd-hedge.l { left: 0; }
-.rd-hedge.r { right: 0; transform: scaleX(-1); }
 .rd-hfoot {
   flex: none;
   height: 18px;
@@ -628,16 +1109,7 @@
 
 @media (max-width: 980px) {
   .rd-cal { padding: 12px 12px 18px; }
-  .rd-cal-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .rd-cal-books {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-    padding: 10px 0 0;
-    max-height: 38vh;
-  }
-  .rd-cal-week { padding-top: calc(16px + var(--rd-cal-gap)); }
-  .rd-hbar { bottom: 66px; }
-  .rd-hbar.lane1 { bottom: 98px; }
+  .rd-cal-layout { gap: 12px; }
   .rd-hpanel { width: min(330px, calc(100% - 20px)); right: 10px; }
   .rd-vside { width: 64px; }
   .rd-vruler-line { left: 41px; }

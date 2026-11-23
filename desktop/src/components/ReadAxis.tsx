@@ -31,15 +31,6 @@ import ReadNav, { type ReadNavHandle } from "./ReadNav";
 import { ratingText } from "./GridView";
 import type { ReadTimelineHandle } from "./readTypes";
 
-/**
- * 横排：轴压在底部，阅读区间从轴往上长。
- *
- * 坐标只由 shared/readScale 的日期换算给，书卡不再按中点推挤；
- * 同一天读完了多少本只聚成一个带数量的圆点，所以 26 本也不会把轴撑开。
- * 拉远后读完标记按年、月聚合，聚合桶从全量数据算，平移时不会重新分组。
- * 起止相交的区间最多占两条轨道，第三条起收进带数量的「叠加」标记，
- * 点开是完整清单，书一本不少。
- */
 interface Props {
   list: ReadEntry[];
   sc: Scale;
@@ -56,63 +47,52 @@ interface Props {
 const K_MIN = 0.08;
 const K_MAX = 7;
 const EASE_MS = 90;
+const COVER_WIDTH = 108;
+const COVER_EDGE = 31;
+const MAX_COVERS = 7;
 
-interface Bar {
-  e: ReadEntry;
-  x0: number;
-  x1: number;
-  lane: 0 | 1;
-}
-
-interface Overflow {
-  entries: ReadEntry[];
-  x0: number;
-  x1: number;
+interface CoverPile {
   day: number;
+  left: number;
+  entries: ReadEntry[];
 }
 
-/** 世界坐标下排轨道。只按日期相交，不看当前视窗，所以平移稳定 */
-function layoutBars(list: ReadEntry[], sc: Scale): { bars: Bar[]; overflow: Overflow[] } {
-  const spans = list
-    .map((e) => {
-      const b = readBounds(e);
-      if (!Number.isFinite(b.a) || b.b <= b.a) return null;
-      return { e, x0: sc.xOf(b.a), x1: sc.xOf(b.b + 1), mid: Math.round((b.a + b.b) / 2) };
-    })
-    .filter((v): v is { e: ReadEntry; x0: number; x1: number; mid: number } => !!v)
-    .sort((a, b) => a.x0 - b.x0 || a.x1 - b.x1);
+const visibleCoverCount = (pile: CoverPile) => Math.min(pile.entries.length, MAX_COVERS);
+const pileWidth = (pile: CoverPile) => COVER_WIDTH + (visibleCoverCount(pile) - 1) * COVER_EDGE;
 
-  const laneEnd = [-Infinity, -Infinity];
-  const bars: Bar[] = [];
-  const hidden: { e: ReadEntry; x0: number; x1: number; mid: number }[] = [];
-  for (const s of spans) {
-    let lane: 0 | 1 | -1 = -1;
-    if (s.x0 >= laneEnd[0]) lane = 0;
-    else if (s.x0 >= laneEnd[1]) lane = 1;
-    if (lane === -1) {
-      hidden.push(s);
+/** 相邻日期靠得过近时合成一叠，给每张封面留出可点击的边。 */
+function layoutCovers(days: ReadBucket<ReadEntry>[], sc: Scale, zoom: number, lo: number, hi: number): CoverPile[] {
+  const step = COVER_EDGE / zoom;
+  const piles: CoverPile[] = [];
+  for (const bucket of days) {
+    const anchor = sc.xOf(bucket.day);
+    if (anchor < lo || anchor >= hi) continue;
+    const left = Math.max(lo, anchor - COVER_WIDTH / (2 * zoom));
+    const last = piles[piles.length - 1];
+    if (last && left < last.left + visibleCoverCount(last) * step) {
+      last.entries.push(...bucket.entries);
+    } else {
+      piles.push({ day: bucket.day, left, entries: bucket.entries.slice() });
+    }
+  }
+
+  /* 右端把最后一叠向内靠齐。和前一叠挤到一起时合并，保持露边。 */
+  while (piles.length) {
+    const last = piles[piles.length - 1];
+    const width = pileWidth(last) / zoom;
+    if (last.left + width <= hi) break;
+    last.left = hi - width;
+    const previous = piles[piles.length - 2];
+    if (previous && last.left < previous.left + visibleCoverCount(previous) * step) {
+      previous.entries.push(...last.entries);
+      piles.pop();
       continue;
     }
-    laneEnd[lane] = s.x1;
-    bars.push({ e: s.e, x0: s.x0, x1: s.x1, lane });
+    if (last.left < lo) last.left = (lo + hi - width) / 2;
+    break;
   }
-
-  /* 收起来的那几段按相交关系抱成团，一团一枚数量标记；点开是全清单 */
-  const groups: Overflow[] = [];
-  hidden.sort((a, b) => a.x0 - b.x0);
-  for (const s of hidden) {
-    const g = groups[groups.length - 1];
-    if (g && s.x0 <= g.x1) {
-      g.entries.push(s.e);
-      g.x1 = Math.max(g.x1, s.x1);
-      g.day = Math.min(g.day, s.mid);
-    } else {
-      groups.push({ entries: [s.e], x0: s.x0, x1: s.x1, day: s.mid });
-    }
-  }
-  return { bars, overflow: groups };
+  return piles;
 }
-
 const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
   { list, sc, bands, navRange, focusDay, today, initialZoom, onFocus, onZoom, onPick },
   ref
@@ -126,8 +106,8 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
   onFocusRef.current = onFocus;
   onZoomRef.current = onZoom;
 
-  const { bars, overflow } = useMemo(() => layoutBars(list, sc), [list, sc]);
   const marks = useMemo(() => navMarks(list, sc, navRange), [list, sc, navRange]);
+  const days = useMemo(() => finishBuckets(list, "day"), [list]);
 
   const [view, setView] = useState({ x0: 0, x1: 0, k: initialZoom });
   const viewRef = useRef(view);
@@ -451,7 +431,7 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
     if (e.button !== 0) return;
     const el0 = e.target as HTMLElement;
     /* 按钮、导航条和面板都走自己的原生点击/滚动，不在这里抢指针捕获 */
-    if (el0.closest("button, .rd-nav, .rd-hpanel, .rd-hedge")) return;
+    if (el0.closest("button, .rd-nav, .rd-hpanel")) return;
     stopGlide();
     setHover(null);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -534,10 +514,10 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
   const bucketKind = bucketAt(sc.monthW * (view.k || initialZoom || 1));
   bucketRef.current = bucketKind;
   const buckets = useMemo(() => {
-    if (bucketKind === "day") return finishBuckets(list, "day").map((b) => ({ ...b, kind: "day" as const }));
+    if (bucketKind === "day") return days.map((b) => ({ ...b, kind: "day" as const }));
     if (bucketKind === "month") return finishBuckets(list, "month").map((b) => ({ ...b, kind: "month" as const }));
     return finishBuckets(list, "year").map((b) => ({ ...b, kind: "year" as const }));
-  }, [list, bucketKind]);
+  }, [list, days, bucketKind]);
 
   const tk = useMemo(() => {
     if (!view.x1) return [];
@@ -548,16 +528,15 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
     );
   }, [sc, view, navRange.a, navRange.b]);
 
-  /* 跨年区间按年份区间取交集裁边：区间外的部分不画出来 */
-  const shownBars = useMemo(() => {
-    if (!view.x1) return [];
-    const lo = Math.max(0, navRange.a);
-    const hi = Math.min(sc.width, Math.max(lo + 1, navRange.b));
-    return bars
-      .filter((b) => b.x1 > view.x0 - 80 && b.x0 < view.x1 + 80)
-      .map((b) => ({ ...b, x0: Math.max(b.x0, lo), x1: Math.min(b.x1, hi) }))
-      .filter((b) => b.x1 > b.x0);
-  }, [bars, view.x0, view.x1, navRange.a, navRange.b, sc.width]);
+  const { a: firstX, b: lastX } = boundsRef.current;
+  const viewZoom = view.k || initialZoom || 1;
+  const piles = useMemo(
+    () => sc.monthW * viewZoom < 90 ? [] : layoutCovers(days, sc, viewZoom, firstX, lastX),
+    [days, sc, viewZoom, firstX, lastX]
+  );
+  const shownPiles = view.x1 ? piles.filter((pile) =>
+    pile.left < view.x1 && pile.left + pileWidth(pile) / viewZoom > view.x0
+  ) : [];
 
   const shownBuckets = useMemo(() => {
     if (!view.x1) return [];
@@ -569,22 +548,13 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
     });
   }, [buckets, sc, view.x0, view.x1, navRange.a, navRange.b]);
 
-  const edgeClip = useMemo(() => {
-    if (!view.x1) return { l: false, r: false };
-    let l = false;
-    let r = false;
-    for (const b of bars) {
-      if (b.x1 <= view.x0 || b.x0 >= view.x1) continue;
-      if (b.x0 < view.x0) l = true;
-      if (b.x1 > view.x1) r = true;
-    }
-    return { l, r };
-  }, [bars, view.x0, view.x1]);
+  const focusX = Math.min(lastX, Math.max(firstX, sc.xOf(focusDay)));
+  const hoveredBounds = hover && readBounds(hover.e);
+  const hoverStart = hoveredBounds && Math.max(firstX, sc.xOf(hoveredBounds.a));
+  const hoverEnd = hoveredBounds && Math.min(lastX, sc.xOf(hoveredBounds.b + 1));
 
-  const focusX = Math.min(boundsRef.current.b, Math.max(boundsRef.current.a, sc.xOf(focusDay)));
-
-  const enter = (e: ReadEntry) => (ev: React.MouseEvent) => {
-    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+  const enter = (e: ReadEntry) => (ev: React.SyntheticEvent<HTMLElement>) => {
+    const r = ev.currentTarget.getBoundingClientRect();
     setHover({ e, anchor: { x: r.left + r.width / 2, y: r.top, side: "top" } });
   };
 
@@ -593,7 +563,7 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
       className="rd-hwrap"
       ref={wrapRef}
       tabIndex={0}
-      aria-label="横排阅读区间时间线，方向键按天或周移动"
+      aria-label="横排阅读封面时间线，方向键按天或周移动"
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={onUp}
@@ -613,7 +583,7 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
     >
       <ReadNav ref={navRef} bands={bands} marks={marks} range={navRange} onSeek={seekFrac} />
 
-      <div className="rd-hstage" ref={hostRef}>
+      <div className="rd-hstage" ref={hostRef} style={{ ["--rd-hcover-width" as never]: COVER_WIDTH + "px" }}>
         <div className="rd-hrail" ref={railRef}>
           <div className="rd-hline" style={{ ["--wx" as never]: sc.width }} />
           <div
@@ -634,38 +604,45 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
             </div>
           ))}
 
-          {shownBars.map((b) => {
-            const wide = (b.x1 - b.x0) * (view.k || 1) >= 120;
-            const from = dayParts(readBounds(b.e).a);
-            const to = dayParts(readBounds(b.e).b);
-            return (
-              <button
-                key={"bar-" + b.e.id}
-                type="button"
-                className={"rd-hbar lane" + b.lane}
-                data-id={b.e.id}
-                data-title={b.e.title + " · " + b.e.start + " 至 " + b.e.end}
-                style={{
-                  ["--wx" as never]: b.x0,
-                  ["--ww" as never]: Math.max(1, b.x1 - b.x0),
-                  ["--lane" as never]: b.lane
-                }}
-                aria-label={`${b.e.title}，${b.e.start} 至 ${b.e.end}`}
-                title={`${b.e.title} · ${b.e.start} 至 ${b.e.end}`}
-                onMouseEnter={enter(b.e)}
-                onMouseLeave={() => setHover(null)}
-                onClick={() => onPick(b.e.id)}
-              >
-                <span className="rd-hbar-t">{b.e.title}</span>
-                {wide ? (
-                  <>
-                    <span className="rd-hbar-d0">{String(from.m).padStart(2, "0")}-{String(from.d).padStart(2, "0")}</span>
-                    <span className="rd-hbar-d1">{String(to.m).padStart(2, "0")}-{String(to.d).padStart(2, "0")}</span>
-                  </>
-                ) : null}
-              </button>
-            );
-          })}
+          {hoverStart != null && hoverEnd != null && hoverEnd > hoverStart ? (
+            <span className="rd-hcover-range" style={{ ["--wx" as never]: hoverStart, ["--ww" as never]: hoverEnd - hoverStart }} aria-hidden="true" />
+          ) : null}
+
+          {shownPiles.map((pile) => (
+            <div key={pile.day} className="rd-hcover-pile" style={{ ["--wx" as never]: pile.left }}>
+              {pile.entries.slice(0, MAX_COVERS).map((entry, index) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className="rd-hcover"
+                  style={{ left: index * COVER_EDGE }}
+                  data-id={entry.id}
+                  aria-label={entry.title}
+                  onMouseEnter={enter(entry)}
+                  onMouseLeave={() => setHover(null)}
+                  onFocus={enter(entry)}
+                  onBlur={() => setHover(null)}
+                  onClick={() => onPick(entry.id)}
+                >
+                  <span className="rd-hcover-face">
+                    {entry.cover ? <img src={coverUrl(entry.cover, entry.coverV)} alt="" loading="lazy" /> : null}
+                    <span className="rd-hcover-name">{entry.title}</span>
+                  </span>
+                </button>
+              ))}
+              {pile.entries.length > MAX_COVERS ? (
+                <button
+                  type="button"
+                  className="rd-hcover-more"
+                  style={{ left: pileWidth(pile) }}
+                  aria-label={`查看这组的 ${pile.entries.length} 本书`}
+                  onClick={() => openDay(pile.entries, pile.day, `${pile.entries.length} 本书`)}
+                >
+                  +{pile.entries.length - MAX_COVERS}
+                </button>
+              ) : null}
+            </div>
+          ))}
 
           {shownBuckets.map((b) => {
             const x = sc.xOf(b.day);
@@ -703,24 +680,7 @@ const ReadAxis = forwardRef<ReadTimelineHandle, Props>(function ReadAxis(
             );
           })}
 
-          {overflow.map((g, i) => (
-            <button
-              key={"ovf-" + i}
-              type="button"
-              className="rd-hovf"
-              data-i={i}
-              style={{ ["--wx" as never]: g.x0 }}
-              aria-label={`还有 ${g.entries.length} 个重叠区间，打开完整清单`}
-              title={`还有 ${g.entries.length} 个重叠区间`}
-              onClick={() => openDay(g.entries, g.day, "重叠区间 · " + g.entries.length + " 本")}
-            >
-              <b>{g.entries.length}</b>
-              <span>段</span>
-            </button>
-          ))}
         </div>
-        {edgeClip.l ? <div className="rd-hedge l" aria-hidden="true">‹</div> : null}
-        {edgeClip.r ? <div className="rd-hedge r" aria-hidden="true">›</div> : null}
       </div>
 
       <div className="rd-hfoot" aria-hidden="true">

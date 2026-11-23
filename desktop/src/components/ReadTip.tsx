@@ -6,8 +6,7 @@ import type { ReadEntry } from "../../shared/types";
 /**
  * 时间线上鼠标停在一本上时浮出来的小卡，横排竖排共用。
  *
- * 位置钉在封面外侧，不跟光标：横排上轨朝上、下轨朝下，竖排左列朝左、
- * 右列朝右，正好落在整块外头的空白里，不压住正在看的那本。
+ * 位置钉在封面外侧，不跟光标，给正在看的封面留出空间。
  * 贴着窗口边就收回来一点，免得半截露在外面。
  * 挂在 body 上：轴那块 overflow 裁得紧，rail 又带 transform，
  * 固定定位落在里面会跟着一起动。
@@ -72,10 +71,14 @@ export default function ReadTip({ e, anchor }: Props) {
         <div className="rd-tip-a">{[e.authors.join("、"), series].filter(Boolean).join(" · ")}</div>
       ) : null}
       <div className="rd-tip-kv">
-        <span>起止</span>
+        <span>{e.end ? "起止" : "开始"}</span>
         <b>{e.span ? e.start + " 至 " + e.end : e.anchor}</b>
-        <span>用时</span>
-        <b>{e.span ? e.days + " 天" : "当天读完"}</b>
+        {e.end ? (
+          <>
+            <span>用时</span>
+            <b>{e.span ? e.days + " 天" : "当天读完"}</b>
+          </>
+        ) : null}
         {rating ? (
           <>
             <span>评分</span>

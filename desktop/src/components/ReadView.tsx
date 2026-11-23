@@ -289,20 +289,6 @@ export default function ReadView({ ver, onPick }: Props) {
     }
   };
 
-  /* 日历的书目和单本直开都只认读完日 e.end，不退回开始日/anchor */
-  const dayBooks = (day: number) =>
-    list.filter((e) => {
-      const en = dayNum(e.end);
-      return Number.isFinite(en) && en === day;
-    });
-
-  /** 日历里点一天：只改共享焦点，不动时间线年份区间；单本直开 */
-  const pickCalendarDay = (day: number) => {
-    setFocusDay(clampScale(day));
-    const books = dayBooks(day);
-    if (books.length === 1) onPick(books[0].id);
-  };
-
   /* 数据刷新后焦点若落到轴外（最早那本被删了），拉回最近的边界 */
   useEffect(() => {
     if (loading) return;
@@ -496,10 +482,8 @@ export default function ReadView({ ver, onPick }: Props) {
         ) : mode === "calendar" && stats ? (
           <ReadCalendar
             list={list}
-            stats={stats}
             focusDay={focusDay}
             today={today}
-            onDayClick={pickCalendarDay}
             onFocusDay={(d) => setFocusDay(clampScale(d))}
             onPick={onPick}
           />
