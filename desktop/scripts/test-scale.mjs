@@ -253,4 +253,38 @@ const bandYears = R.yearBands(navList.map((e) => e.anchor), navSc).filter(
 );
 t("区间里有几年的数得出来", bandYears.length === 3, bandYears.map((b) => b.y).join(" / "));
 
+/* ---- 八、固定月宽与阅读日期口径 ---- */
+console.log("[8] 固定月宽");
+const denseDays = Array.from({ length: 26 }, () => D("2025-03-12"));
+const fixed = R.buildScale([...denseDays, D("2024-01-05"), D("2026-02-01")], {
+  until: D("2026-02-01"),
+  fixedMonthW: 168
+});
+t("固定月宽就是界面指定的宽度", Math.abs(fixed.monthW - 168) < 0.01, fixed.monthW.toFixed(1));
+t(
+  "同一天 26 本不把任何一个月撑宽",
+  Math.abs(fixed.xOf(D("2024-02-01")) - fixed.xOf(D("2024-01-01")) - 168) < 0.01 &&
+    Math.abs(fixed.xOf(D("2025-04-01")) - fixed.xOf(D("2025-03-01")) - 168) < 0.01
+);
+t("固定宽模式下空月也占满一格", Math.abs(fixed.xOf(D("2025-01-01")) - fixed.xOf(D("2024-12-01")) - 168) < 0.01);
+const defaultDense = R.buildScale(denseDays, { until: D("2025-04-01") });
+t("不传固定宽时仍按最密月定宽，旧行为没动", defaultDense.monthW > 168, defaultDense.monthW.toFixed(1));
+
+console.log("[9] 读完日与聚合");
+const startPoint = { start: "2025-03-02", end: "", anchor: "2025-03-02" };
+const both = { start: "2025-03-02", end: "2025-03-20", anchor: "2025-03-20" };
+const endOnly = { start: "2025-03-08", end: "2025-03-08", anchor: "2025-03-08" };
+t("只有开始日期的记录是一个开始点", R.readBounds(startPoint).onlyStart && R.readBounds(startPoint).point);
+t("读完日就是分组落点", R.finishDay(both) === D("2025-03-20") && R.finishDay(startPoint) === D("2025-03-02"));
+t("起止区间包含读完那天", R.readBounds(both).a === D("2025-03-02") && R.readBounds(both).b === D("2025-03-20"));
+const list9 = [startPoint, both, endOnly];
+const byDay9 = R.finishBuckets(list9, "day");
+t("按读完日聚合，同一天只出一桶", byDay9.length === 3 && byDay9.find((b) => b.key === "2025-03-20").n === 1);
+const byMonth9 = R.finishBuckets(list9, "month");
+t("按月聚合把跨月书归到读完月", byMonth9.length === 1 && byMonth9[0].key === "2025-03" && byMonth9[0].n === 3);
+t("26 本同日聚成一个桶", R.finishBuckets(denseDays.map((d) => ({ start: "2025-03-12", end: "2025-03-12", anchor: "2025-03-12" })), "day")[0].n === 26);
+t("聚合阈值：远看年、近看日", R.bucketAt(30) === "year" && R.bucketAt(240) === "month" && R.bucketAt(420) === "day");
+t("最近一条有展示日期的记录找得到", R.latestRecordedDay(list9) === D("2025-03-20"));
+t("只填开始日期也算展示日期", R.latestRecordedDay([startPoint]) === D("2025-03-02"));
+
 console.log("\n时间轴换算 " + ok + "/" + (ok + bad) + " 通过");

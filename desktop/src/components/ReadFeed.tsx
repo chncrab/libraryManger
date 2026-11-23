@@ -1,417 +1,522 @@
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { coverUrl } from "../api";
-import { gradeIcon, ratingText } from "./GridView";
-import { dayLabel, dayNum, navMarks, ticks, type NavRange, type Scale, type YearBand } from "../../shared/readScale";
+import {
+  DAY_MS,
+  dayParts,
+  dayStr,
+  finishBuckets,
+  finishDay,
+  monthFirstOfKey,
+  monthKeyOf,
+  monthLength,
+  navMarks,
+  type NavRange,
+  type Scale,
+  type YearBand
+} from "../../shared/readScale";
 import type { ReadEntry } from "../../shared/types";
-import { useEffect, useMemo, useRef, useState } from "react";
-import ReadTip, { type TipAnchor } from "./ReadTip";
+import { ratingText } from "./GridView";
 import ReadNav, { type ReadNavHandle } from "./ReadNav";
+import type { ReadTimelineHandle } from "./readTypes";
 
 /**
- * 竖排时间线：一条竖轴在正中，书从上往下按读的那段时间排开，早的在上面。
+ * 竖排：左边一条日期尺，右边当前月份按日列书。
  *
- * 条目在轴左右交替站，封面都贴着轴放，文字朝外，像一条大河两边分岔。
- * 时间段平时不画，鼠标停在哪条上才动起来：先从封面拉一根细线横到轴上，
- * 再沿着轴往下漫到读完那天，当天读完的以那天为中心上下各盖半个日格。
- * 同时光标旁浮出一张写着起止、用时与评分的小卡。
- * 整条是一条瀑布，不按年折叠，最右边竖着一条按年等分的总览，拖着它跨年。
- * 右边那条要占地方，内容整体让出 46px（条二十六、条左边那列年份字二十），
- * 轴于是落在窗口正中偏左一点，免得最右那列书名被总览压住。
+ * 日期尺的像素直接取横排那套日期换算：(sc.xOf(day) − sc.xOf(first)) × zoom，
+ * 反查用 sc.dayAt。于是二月与三月同宽，和横排完全一致，不再按「天差 × 日高」
+ * 把短月压短。可见范围取 ReadView 的年份区间，结束日以今天为上限。
  *
- * Ctrl + 滚轮缩放整屏，光标那一点不动。缩放走 transform，外面另套一层
- * 按缩放撑开的盒子，滚动条才认得实际长度。倍数不打 React 的 state：
- * 一帧一个值，几百条封面跟着重渲染会卡，所以直接写到两个盒子的 style 上。
- * 目标倍数与画着的倍数分开，每帧朝目标靠一截，缩放才有过渡而不是硬跳。
- *
- * 三套倍数各管一段，跟横排是同一套口径：
- *   --z  轴上的距离，一直放大下去，日刻度才拉得开；
- *   --vi 封面与文字，放到「刚好铺满容器」就封顶，再放大不让书名涨成三倍；
- *   --zi 贴轴的那些零碎（金线、日号、探针、刻度线与刻度字），按 1/z 抵回去，
- *       屏幕上始终一样粗细大小 —— 不然放到三倍，年份会变四十多号字。
- * 只把看得见的几十条挂进 DOM：全挂着的话，改一次变量就是上千条一起重排重绘。
+ * 右边仍按读完日分组。日期尺滚动先预览焦点，停稳后才换右侧月份；点尺上的
+ * 日期、点右侧日期标题都落到同一组。右侧另贴一条竖放的 ReadNav 进度条。
  */
 interface Props {
   list: ReadEntry[];
   sc: Scale;
-  /** 年份分段，与横排共用一份 */
   bands: YearBand[];
-  /** 导航条铺开的那一段，选了显示区间就只铺那几年 */
-  navRange: NavRange;
+  range: NavRange;
+  focusDay: number;
+  today: number;
+  initialZoom: number;
+  onFocus: (day: number) => void;
+  onZoom: (z: number) => void;
   onPick: (id: string) => void;
 }
 
-const COV_W = 44;
-const COV_H = 66;
-const TXT_W = 292;
-const ITEM_GAP = 10;
-/** 封面 + 间距 + 文字，一条的总宽 */
-const ITEM_W = COV_W + ITEM_GAP + TXT_W;
-/** 封面靠轴那一侧离轴多远 */
-const AX_GAP = 46;
-const W = (AX_GAP + ITEM_W) * 2;
-/** 轴线在正中间，左右各一半 */
-const AX = W / 2;
-/** 同一列相邻两条最少隔这么高，交错之后实际隔一半 */
-const MINSEP = COV_H + 8;
-/** 竖排的缩放范围。月按同一个宽度排之后一屏只有一两个月，
-    往下要能缩到 0.28 才看得见小半年；往上放到日刻度能拉开 */
-const Z_MIN = 0.28;
-const Z_MAX = 3.2;
-/** 追目标的时间常数，与横排同一个手感 */
-const EASE_MS = 90;
-/** 视窗外上下各留这么高，滚过去时不至于露白；世界坐标 */
-const WIN_PAD = 360;
+const Z_MIN = 0.5;
+const Z_MAX = 5;
+const WEEK = ["日", "一", "二", "三", "四", "五", "六"];
 
-interface Row {
-  e: ReadEntry;
-  y: number;
-  col: 0 | 1;
-  /** 轴上那段金线的上下沿，相对这条顶端 */
-  barTop: number;
-  barH: number;
-  /** 金线两头的日号，只写几号 */
-  d0: string;
-  d1: string;
-  span: boolean;
+function clampMonth(key: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, key));
 }
 
-function rows(list: ReadEntry[], sc: Scale) {
-  const asc = list.slice().reverse();
-  const out: Row[] = [];
-  /* 记的是每条占到的下沿，比较时不再另加 MINSEP，否则一列里每两条要隔两倍高 */
-  const edge: [number, number] = [-1e9, -1e9];
-  let alt = 0;
-  for (const e of asc) {
-    const a = dayNum(e.start);
-    const b = dayNum(e.end || e.anchor);
-    const day0 = Number.isFinite(a) ? a : b;
-    const day1 = Number.isFinite(b) ? Math.max(b, day0) : day0;
-    /* 一天是相邻两点之间的一段：从开始那天清晨，盖到读完那天的深夜 */
-    const s = sc.xOf(day0);
-    const t = sc.xOf(day1 + 1);
-    const mid = (s + t) / 2;
-    let y = mid - COV_H / 2;
-    let col: 0 | 1 = alt as 0 | 1;
-    if (y < edge[col]) {
-      const other = (1 - col) as 0 | 1;
-      if (y >= edge[other]) col = other;
-      else {
-        y = Math.min(edge[0], edge[1]);
-        col = edge[0] <= edge[1] ? 0 : 1;
-      }
-    }
-    const span = day1 > day0;
-    out.push({
-      e,
-      y,
-      col,
-      barTop: s - y,
-      barH: t - s,
-      d0: dayLabel(day0),
-      d1: dayLabel(day1),
-      span
-    });
-    edge[col] = y + MINSEP;
-    alt = 1 - col;
-  }
-  /* 末尾推到今天：最后一本书之后那段日子轴也照画，不提前断掉。
-     content 是最后一本书那一头，开场落在它上面，空尾巴留着往下滚 */
-  const content = Math.max(edge[0], edge[1]) + 48;
-  return { rows: out, height: Math.max(content, sc.width + 48), content };
-}
-
-export default function ReadFeed({ list, sc, bands, navRange, onPick }: Props) {
-  const { rows: items, height, content } = useMemo(() => rows(list, sc), [list, sc]);
-  /* 导航条：条铺 navRange 那一段，每本书一根金线 */
-  const marks = useMemo(() => navMarks(list, sc, navRange), [list, sc, navRange]);
-  /** 量可见段那个 effect 只跑一次，换算层得走 ref 才拿得到新的 */
-  const scRef = useRef(sc);
-  scRef.current = sc;
-  const navRef = useRef<ReadNavHandle | null>(null);
+const ReadFeed = forwardRef<ReadTimelineHandle, Props>(function ReadFeed(
+  { list, sc, bands, range, focusDay, today, initialZoom, onFocus, onZoom, onPick },
+  ref
+) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const scaleRef = useRef<HTMLDivElement | null>(null);
-  const innerRef = useRef<HTMLDivElement | null>(null);
+  const rulerRef = useRef<HTMLDivElement | null>(null);
+  const booksRef = useRef<HTMLDivElement | null>(null);
+  const navRef = useRef<ReadNavHandle | null>(null);
+  const dragRef = useRef<{ y: number; top: number; moved: number } | null>(null);
+  const skipScroll = useRef(0);
+  const previewTimer = useRef(0);
+  const focusRef = useRef(focusDay);
+  const zoomRef = useRef(Math.min(Z_MAX, Math.max(Z_MIN, initialZoom || 1)));
+  const onFocusRef = useRef(onFocus);
+  const onZoomRef = useRef(onZoom);
+  onFocusRef.current = onFocus;
+  onZoomRef.current = onZoom;
 
-  /* 缩放不进布局：外面那层按倍数撑开给滚动条用，里面的 .rv 整体 transform */
-  const zCam = useRef(1);
-  const zTgt = useRef(1);
-  const lastZ = useRef(0);
-  const rafZ = useRef(0);
-  /** 光标下那一点的世界坐标与它离滚动框顶的距离，缩放全程按它反算 scrollTop */
-  const anchor = useRef<{ wy: number; py: number } | null>(null);
-  const hRef = useRef(height);
-  hRef.current = height;
-  const contentRef = useRef(content);
-  contentRef.current = content;
+  /* 年份区间与今天的交集：日期尺和绘制都落在这里，结束日不超过 today */
+  const ra = Math.max(0, Math.min(sc.width, range.a));
+  const rb = Math.min(sc.width, Math.max(ra + 1, range.b));
+  const x0 = ra;
+  const first = Math.max(sc.first, Math.min(today, sc.dayAt(x0)));
+  const last = Math.min(today, Math.max(first, sc.dayAt(Math.max(x0, rb - 1))));
+  const bottom = Math.min(rb, sc.xOf(last + 1));
+  const loMonth = monthKeyOf(first);
+  const hiMonth = monthKeyOf(last);
 
-  /* 现在看得见的一段（世界坐标）与当下的缩放档位。只有它变了才重挂条目与刻度 */
-  const [win, setWin] = useState({ y0: 0, y1: 0, z: 1 });
+  const [focus, setFocus] = useState(focusDay);
+  const [month, setMonth] = useState(() => clampMonth(monthKeyOf(focusDay), loMonth, hiMonth));
+  const [zoom, setZoom] = useState(zoomRef.current);
+  const [win, setWin] = useState({ a: first, b: first, h: 0 });
+  const [preview, setPreview] = useState<number | null>(null);
+  const wantGroup = useRef<number | null>(null);
+  const anchorZoom = useRef(false);
+  const anchorRef = useRef<{ wx: number; py: number } | null>(null);
 
-  /* 鼠标停在哪一条上，条目外侧浮出一张小卡。位置只在换一条时算一次 */
-  const [hover, setHover] = useState<{ e: ReadEntry; anchor: TipAnchor } | null>(null);
+  const pxDay = (day: number) => sc.slopeAt(day) * zoom;
+  const yOf = (day: number) => (sc.xOf(day) - x0) * zoom;
+  const height = Math.max(1, (bottom - x0) * zoom);
 
-  const boxOf = () => rootRef.current?.closest(".scroll") as HTMLElement | null;
+  const geomRef = useRef({ x0, bottom, first, last, zoom });
+  geomRef.current = { x0, bottom, first, last, zoom };
+  const boundsRef = useRef({ first, last, lo: loMonth, hi: hiMonth });
+  boundsRef.current = { first, last, lo: loMonth, hi: hiMonth };
+  zoomRef.current = zoom;
 
-  const drawZRef = useRef<() => void>(() => {});
-  const drawZ = () => {
-    rafZ.current = 0;
-    const inner = innerRef.current;
-    const scale = scaleRef.current;
-    if (!inner || !scale) return;
-    const t = zTgt.current;
-    if (zCam.current !== t) {
-      const now = performance.now();
-      const dt = Math.min(64, Math.max(8, now - lastZ.current || 16));
-      lastZ.current = now;
-      const a = 1 - Math.exp(-dt / EASE_MS);
-      const z = zCam.current + (t - zCam.current) * a;
-      zCam.current = Math.abs(t - z) < 0.004 ? t : z;
+  const recorded = useMemo(() => {
+    const set = new Set<number>();
+    for (const e of list) {
+      const d = finishDay(e);
+      if (Number.isFinite(d)) set.add(d);
     }
-    const z = zCam.current;
-    /* 封面与文字放到「刚好铺满容器」就封顶：再往上只让轴拉开，
-       不然放到看得清日刻度的三倍时，书名也跟着涨成三倍 */
-    const fit = Math.max(1, (scale.clientWidth || W) / W);
-    inner.style.setProperty("--vi", (Math.min(fit, z) / z).toFixed(4));
-    inner.style.setProperty("--zi", (1 / Math.max(1, z)).toFixed(4));
-    /* 年线横贯整屏、年份字贴着左边框：两个都按世界坐标反算，
-       屏幕上位置固定，缩放时不会往中间跑。字号另外按 1/z 抵回去，
-       缩到三成时也不至于成为一粒看不见的灰 */
-    const edge = -Math.max(0, (scale.clientWidth || W) / 2 - 46) / z;
-    inner.style.setProperty("--edge", edge.toFixed(1));
-    inner.style.setProperty("--edgew", (-edge * 2).toFixed(1));
-    inner.style.setProperty("--zy", (1 / Math.max(0.5, z)).toFixed(4));
-    inner.style.transform = `translateX(-50%) scale(${z})`;
-    scale.style.height = hRef.current * z + "px";
-    const box = boxOf();
-    const a0 = anchor.current;
-    if (box && a0) box.scrollTop = Math.max(0, a0.wy * z - a0.py);
-    if (zCam.current !== t) scheduleZ();
-  };
-  drawZRef.current = drawZ;
+    return set;
+  }, [list]);
 
-  const scheduleZ = () => {
-    if (!rafZ.current) rafZ.current = requestAnimationFrame(() => drawZRef.current());
-  };
+  const dayGroups = useMemo(() => finishBuckets(list, "day"), [list]);
+  const groups = useMemo(() => dayGroups.filter((g) => monthKeyOf(g.day) === month), [dayGroups, month]);
+  const marks = useMemo(() => navMarks(list, sc, range), [list, sc, range.a, range.b]);
 
-  /* 开场落在最下面，最近读的先看见，往回翻才是一年一年往前。
-     轴一直铺到今天，最后一本书之后还有几个月的空档，所以落点是书那一头，
-     不是轴的尽头 —— 否则一进来就是一屏空白 */
-  useEffect(() => {
-    const box = boxOf();
-    if (box) box.scrollTop = Math.max(0, Math.min(box.scrollHeight, contentRef.current) - box.clientHeight);
-    return () => {
-      if (rafZ.current) cancelAnimationFrame(rafZ.current);
-      /* id 得一起清掉：StrictMode 下撤销之后还要再跑一遍，留着旧 id 的话
-         之后再排帧永远被当成「已经排上了」，缩放就再也动不了 */
-      rafZ.current = 0;
-    };
-  }, []);
+  const monthRecorded = groups.length > 0;
 
-  /* 换了显示区间，视野落在区间外就滚进去 —— 否则右边那条滑块贴在端上，看着像
-     没反应。已经在区间里就不动，别打断手头的滚动 */
-  useEffect(() => {
-    const box = boxOf();
+  const monthMarks = useMemo(() => {
+    const out: { day: number; y: number; m: number; isYear: boolean }[] = [];
+    let key = loMonth;
+    while (key <= hiMonth) {
+      const d = monthFirstOfKey(key);
+      const p = dayParts(d);
+      out.push({ day: d, y: p.y, m: p.m, isYear: p.m === 1 });
+      key++;
+    }
+    return out;
+  }, [loMonth, hiMonth]);
+
+  const scrollRulerTo = (day: number) => {
+    const box = rulerRef.current;
     if (!box) return;
-    const z = zCam.current || 1;
-    const y0 = box.scrollTop / z;
-    const y1 = (box.scrollTop + box.clientHeight) / z;
-    if (y1 > navRange.a && y0 < navRange.b) return;
-    box.scrollTop = Math.max(0, ((navRange.a + navRange.b) / 2) * z - box.clientHeight / 2);
-  }, [navRange.a, navRange.b]);
+    const g = geomRef.current;
+    skipScroll.current = performance.now() + 120;
+    const y = (sc.xOf(day) - g.x0) * zoomRef.current;
+    box.scrollTop = Math.max(0, y - box.clientHeight / 2 + pxDay(day) / 2);
+  };
 
-  /* 窗口变宽变窄，「刚好铺满」的那一档封顶跟着变，得重算一次；
-     右边那条导航占掉的 46px 也在这个宽度里，窗口一动它就得重新让位 */
-  useEffect(() => {
-    const el = scaleRef.current;
+  const scrollGroup = (day: number) => {
+    const box = booksRef.current;
+    if (!box) return;
+    const el = box.querySelector(`[data-day="${dayStr(day)}"]`) as HTMLElement | null;
     if (!el) return;
-    const ro = new ResizeObserver(() => drawZRef.current());
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.scrollTop = Math.max(0, box.scrollTop + delta - 8);
+  };
 
-  /* 量一下现在看得见哪一段。滚动与缩放都会改它，落到窗口上只认粗档：
-     每帧都更新的话，条目跟着一帧重挂一次，比不裁还慢 */
-  useEffect(() => {
-    const measure = () => {
-      const box = boxOf();
-      const el = innerRef.current;
-      if (!box || !el) return;
-      /* 右边那条竖导航跟着滚动框的高度走，窗口矮了它也跟着矮 */
-      rootRef.current?.style.setProperty("--navh", Math.max(140, box.clientHeight - 40) + "px");
-      const z = zCam.current || 1;
-      const b = box.getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      const y0 = (b.top - r.top) / z;
-      const y1 = y0 + box.clientHeight / z;
-      /* 滑块跟着走：左沿与长短都是整条轴的分位，条铺满全轴，缩得越远框越长 */
-      navRef.current?.setView(y0, y1);
-      const zq = Math.round(z * 10) / 10;
-      setWin((p) => {
-        const slack = Math.max(160, (p.y1 - p.y0) * 0.5);
-        const moved = Math.abs(y0 - p.y0) > slack || Math.abs(y1 - p.y1) > slack;
-        if (!moved && Math.abs(zq - p.z) < 0.06) return p;
-        return { y0, y1, z: zq };
-      });
-    };
-    measure();
-    const id = setInterval(measure, 150);
-    const box = boxOf();
-    box?.addEventListener("scroll", measure, { passive: true });
-    return () => {
-      clearInterval(id);
-      box?.removeEventListener("scroll", measure);
-    };
-  }, []);
+  const commit = (day: number, opts: { ruler?: boolean; group?: boolean } = {}) => {
+    const b = boundsRef.current;
+    const d = Math.min(b.last, Math.max(b.first, day));
+    const key = clampMonth(monthKeyOf(d), b.lo, b.hi);
+    setFocus(d);
+    setMonth(key);
+    focusRef.current = d;
+    onFocusRef.current(d);
+    if (opts.ruler !== false) scrollRulerTo(d);
+    if (opts.group !== false) wantGroup.current = d;
+  };
+  /** 命令式手柄总拿最新一版 commit，不吃旧的 dayH / range 闭包 */
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
 
+  /* 月份或焦点变了、右侧重排之后再滚到那组，确保定位到某日能看到相关组 */
   useEffect(() => {
-    const wrap = rootRef.current;
-    if (!wrap) return;
-    const onWheel = (ev: WheelEvent) => {
-      const box = boxOf();
-      if (!box) return;
-      /* 滚在导航条上就是翻年份：一路平着走，不缩放。一次约走一年 ——
-         铺的是全轴，条上一像素跨着几天，按条长算就滚不动了 */
-      if ((ev.target as HTMLElement | null)?.closest?.(".rd-nav")) {
-        if (ev.ctrlKey || ev.metaKey) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const d = ((12 * scRef.current.monthW) / 120) * (ev.deltaY + ev.deltaX);
-        box.scrollTop = Math.max(0, Math.min(box.scrollHeight, box.scrollTop + d * zCam.current));
-        return;
+    const d = wantGroup.current;
+    if (d == null) return;
+    wantGroup.current = null;
+    const id = requestAnimationFrame(() => scrollGroup(d));
+    return () => cancelAnimationFrame(id);
+  }, [month, focus, groups]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      seekDay(day: number) {
+        commitRef.current(day);
+      },
+      zoomBy(factor: number) {
+        const z = Math.min(Z_MAX, Math.max(Z_MIN, zoomRef.current * factor));
+        if (Math.abs(z - zoomRef.current) < 0.001) return;
+        zoomRef.current = z;
+        setZoom(z);
+        onZoomRef.current(z);
       }
+    }),
+    []
+  );
+
+  /* 挂载时把日期尺和右侧都落到焦点日；之后由交互推动，不跟着 prop 反复重排 */
+  useEffect(() => {
+    const box = rulerRef.current;
+    if (!box) return;
+    const g = geomRef.current;
+    const d = Math.min(g.last, Math.max(g.first, focusRef.current));
+    box.scrollTop = Math.max(0, (sc.xOf(d) - g.x0) * zoomRef.current - box.clientHeight / 2);
+    wantGroup.current = d;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* 外部改了焦点（年份区间夹住、日期输入等）时跟着走 */
+  useEffect(() => {
+    if (focusDay === focusRef.current) return;
+    const b = boundsRef.current;
+    const d = Math.min(b.last, Math.max(b.first, focusDay));
+    focusRef.current = d;
+    setFocus(d);
+    setMonth(clampMonth(monthKeyOf(d), b.lo, b.hi));
+    scrollRulerTo(d);
+    wantGroup.current = d;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusDay]);
+
+  /* 年份区间变了：可见首尾日跟着换，焦点夹回区间并重新对准 */
+  useEffect(() => {
+    const b = boundsRef.current;
+    const d = Math.min(b.last, Math.max(b.first, focusRef.current));
+    focusRef.current = d;
+    setFocus(d);
+    setMonth(clampMonth(monthKeyOf(d), b.lo, b.hi));
+    scrollRulerTo(d);
+    wantGroup.current = d;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range.a, range.b]);
+
+  /* 缩放按钮：仍把焦点日停在日期尺中间。Ctrl 滚轮自己锚定光标，不在这里抢 */
+  useEffect(() => {
+    if (anchorZoom.current) {
+      anchorZoom.current = false;
+      const a = anchorRef.current;
+      const box = rulerRef.current;
+      if (a && box) {
+        box.scrollTop = Math.max(0, (a.wx - geomRef.current.x0) * zoom - a.py);
+      }
+      anchorRef.current = null;
+      return;
+    }
+    scrollRulerTo(focusRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom]);
+
+  useEffect(() => {
+    const el = rulerRef.current;
+    if (!el) return;
+    const read = () => {
+      const g = geomRef.current;
+      const z = zoomRef.current;
+      const topW = g.x0 + el.scrollTop / z;
+      const botW = g.x0 + (el.scrollTop + el.clientHeight) / z;
+      const center = Math.min(g.last, Math.max(g.first, sc.dayAt(g.x0 + (el.scrollTop + el.clientHeight / 2) / z)));
+      setWin({
+        a: Math.max(g.first, sc.dayAt(topW)),
+        b: Math.min(g.last, sc.dayAt(botW)),
+        h: sc.slopeAt(center) * z
+      });
+      setPreview(center);
+      navRef.current?.setView(topW, botW);
+      if (performance.now() < skipScroll.current) return;
+      window.clearTimeout(previewTimer.current);
+      previewTimer.current = window.setTimeout(() => {
+        setPreview(null);
+        commitRef.current(center, { ruler: false, group: true });
+      }, 140);
+    };
+    read();
+    el.addEventListener("scroll", read, { passive: true });
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", read);
+      ro.disconnect();
+      window.clearTimeout(previewTimer.current);
+    };
+  }, [zoom, x0, first, last, sc]);
+
+  /* Ctrl + 滚轮只改刻度密度，并让光标下的那一天留在原处 */
+  useEffect(() => {
+    const el = rulerRef.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
       if (!ev.ctrlKey && !ev.metaKey) return;
       ev.preventDefault();
-      ev.stopPropagation();
-      const z = zCam.current;
-      const nz = Math.min(Z_MAX, Math.max(Z_MIN, Math.round(z * Math.exp(-ev.deltaY * 0.0018) * 40) / 40));
-      if (nz === zTgt.current) return;
-      /* 记下这一刻光标压着哪个世界坐标，动画每一帧都把它按回原处 */
-      const p = ev.clientY - box.getBoundingClientRect().top;
-      anchor.current = { wy: (box.scrollTop + p) / z, py: p };
-      zTgt.current = nz;
-      scheduleZ();
+      const rect = el.getBoundingClientRect();
+      const py = ev.clientY - rect.top;
+      const z0 = zoomRef.current;
+      const wx = geomRef.current.x0 + (el.scrollTop + py) / z0;
+      const z = Math.min(Z_MAX, Math.max(Z_MIN, Math.round(z0 * Math.exp(-ev.deltaY * 0.002) * 40) / 40));
+      if (z === z0) return;
+      zoomRef.current = z;
+      anchorZoom.current = true;
+      anchorRef.current = { wx, py };
+      setZoom(z);
+      onZoomRef.current(z);
     };
-    wrap.addEventListener("wheel", onWheel, { passive: false });
-    return () => wrap.removeEventListener("wheel", onWheel);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  /** 拖导航条：把那个世界坐标摆到视野正中。手直接拖的，不用平滑滚动 */
-  const seekFrac = (x: number) => {
-    const box = boxOf();
+  const moveMonth = (delta: number) => {
+    const b = boundsRef.current;
+    const key = clampMonth(month + delta, b.lo, b.hi);
+    const start = monthFirstOfKey(key);
+    const rec = dayGroups.find((g) => monthKeyOf(g.day) === key);
+    commit(rec ? rec.day : start);
+  };
+
+  const jumpRecorded = () => {
+    if (!dayGroups.length) {
+      commit(first);
+      return;
+    }
+    const center = (monthFirstOfKey(month) + monthLength(monthFirstOfKey(month)) / 2) | 0;
+    let best = dayGroups[0];
+    for (const g of dayGroups) {
+      if (Math.abs(g.day - center) < Math.abs(best.day - center)) best = g;
+    }
+    commit(best.day);
+  };
+
+  /** 竖放导航条：把某段世界坐标摆到日期尺正中 */
+  const seekWorld = (x: number) => {
+    const box = rulerRef.current;
     if (!box) return;
-    box.scrollTop = Math.max(0, x * zCam.current - box.clientHeight / 2);
+    box.scrollTop = Math.max(0, (x - geomRef.current.x0) * zoomRef.current - box.clientHeight / 2);
   };
 
-  /* 只挂看得见的那几条 */
-  const shown = useMemo(() => {
-    if (!win.y1) return [];
-    const y0 = win.y0 - WIN_PAD;
-    const y1 = win.y1 + WIN_PAD;
-    return items.filter((r) => r.y + COV_H + 60 > y0 && r.y < y1);
-  }, [items, win.y0, win.y1]);
-
-  /* 刻度也只算这一段。放大到能看见日刻度的时候，整条轴上有几千天 */
-  const tks = useMemo(() => {
-    if (!win.y1) return [];
-    return ticks(sc, sc.dayAt(win.y0 - WIN_PAD * 0.4), sc.dayAt(win.y1 + WIN_PAD * 0.4), win.z);
-  }, [sc, win]);
-
-  /* 小卡钉在封面外侧：右半边朝右放、左半边朝左放。
-     不放到整条的最边上 —— 那样离轴快四百像素，眼睛得横着跳过去 */
-  const enter = (r: Row, e: ReadEntry) => (ev: React.MouseEvent) => {
-    const row = ev.currentTarget as HTMLElement;
-    const cov = (row.querySelector(".rv-cov") as HTMLElement | null)?.getBoundingClientRect();
-    const box = (cov || row.getBoundingClientRect());
-    setHover({
-      e,
-      anchor: {
-        x: r.col ? box.right : box.left,
-        y: box.top + box.height / 2,
-        side: r.col ? "right" : "left"
-      }
-    });
+  /* 空白处拖动日期尺。滚轮和滚动条本来就能滚，这里补鼠标按住拖 */
+  const onRulerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button")) return;
+    const el = rulerRef.current;
+    if (!el) return;
+    el.setPointerCapture(e.pointerId);
+    dragRef.current = { y: e.clientY, top: el.scrollTop, moved: 0 };
   };
+  const onRulerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    const el = rulerRef.current;
+    if (!d || !el) return;
+    const dy = e.clientY - d.y;
+    d.moved = Math.max(d.moved, Math.abs(dy));
+    el.scrollTop = Math.max(0, d.top - dy);
+  };
+  const onRulerUp = (e: React.PointerEvent) => {
+    const el = rulerRef.current;
+    dragRef.current = null;
+    try {
+      el?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* 指针已经没了 */
+    }
+  };
+
+  const monthStart = monthFirstOfKey(month);
+  const monthP = dayParts(monthStart);
+  const focusP = dayParts(focus);
+  const previewP = preview == null ? null : dayParts(preview);
+  const focusY = Math.min(height, Math.max(0, yOf(focus) + pxDay(focus) / 2));
 
   return (
-    <div className="rvwrap" ref={rootRef}>
-      <div className="rv-navslot">
-        <ReadNav ref={navRef} bands={bands} marks={marks} range={navRange} onSeek={seekFrac} vertical />
-      </div>
-
-      <div className="rv-scale" ref={scaleRef} style={{ width: "calc(100% - 46px)", height }}>
-        <div className="rv" ref={innerRef} style={{ height, width: W, transform: "translateX(-50%) scale(1)" }}>
-          <div className="rv-axis" style={{ left: AX }}>
-            {/* 轴上不标日号，星期天那根加粗；起止那两天标在金线两头 */}
-            {tks.map((t) => (
-              <div
-                key={t.kind + "-" + t.x.toFixed(1)}
-                className={"rv-tk " + t.kind}
-                style={{ top: t.x, ["--ww" as never]: t.w }}
+    <div className="rd-vwrap" ref={rootRef}>
+      <div className="rd-vside">
+        <div
+          className="rd-vruler"
+          ref={rulerRef}
+          onPointerDown={onRulerDown}
+          onPointerMove={onRulerMove}
+          onPointerUp={onRulerUp}
+          onPointerCancel={onRulerUp}
+          aria-label="日期尺，滚动或拖动浏览，Ctrl 加滚轮缩放"
+        >
+          <div className="rd-vruler-track" style={{ height }}>
+            <i className="rd-vruler-line" />
+            {monthMarks.map((m) => (
+              <button
+                key={"m" + m.day}
+                className={"rd-vmark month" + (m.isYear ? " year" : "")}
+                style={{ top: yOf(m.day) }}
+                data-day={dayStr(m.day)}
+                title={`${m.y} 年 ${m.m} 月`}
+                onClick={() => commit(m.day)}
               >
-                {t.label ? (
-                  <span>
-                    {t.label}
-                    {/* 年份后面跟一支箭头，指着这一年往下走的那一边 */}
-                    {t.kind === "year" ? <i className="rv-yarw" /> : null}
-                  </span>
-                ) : null}
-              </div>
+                <span>{m.isYear ? m.y : m.m + "月"}</span>
+              </button>
             ))}
+            {win.h >= 10
+              ? (() => {
+                  const out: number[] = [];
+                  for (let d = win.a; d <= win.b; d++) out.push(d);
+                  return out.map((d) => (
+                    <button
+                      key={"d" + d}
+                      className={"rd-vmark day" + (d === today ? " today" : "") + (d === focus ? " on" : "")}
+                      style={{ top: yOf(d) + pxDay(d) / 2 }}
+                      data-day={dayStr(d)}
+                      title={dayStr(d)}
+                      onClick={() => commit(d)}
+                    >
+                      <span>{dayParts(d).d}</span>
+                    </button>
+                  ));
+                })()
+              : null}
+            {[...recorded]
+              .filter((d) => d >= win.a && d <= win.b)
+              .map((d) => (
+                <i
+                  key={"dot" + d}
+                  className="rd-vdot"
+                  style={{ top: yOf(d) + pxDay(d) / 2 }}
+                  title={dayStr(d)}
+                />
+              ))}
+            <i className="rd-vfocus" style={{ top: focusY }} title={"焦点 " + dayStr(focus)} />
           </div>
-
-          {shown.map((r) => (
-            <div
-              className={"rv-item col" + r.col}
-              key={r.e.id}
-              data-id={r.e.id}
-              data-title={r.e.title + " · " + (r.e.span ? r.e.start + " 至 " + r.e.end : r.e.anchor)}
-              style={{ top: r.y }}
-              onClick={() => onPick(r.e.id)}
-              onMouseEnter={enter(r, r.e)}
-              onMouseLeave={() => setHover(null)}
-            >
-              {/* 先一根细线从封面横到轴上，再沿着轴漫开，盖住读的那几天 */}
-              <i className="rv-probe" />
-              <i className="rv-run" style={{ top: r.barTop, height: r.barH }} />
-              {/* 金线两头的日期：开始那天在上、读完那天在下，都写成 月-日 */}
-              <span className="rv-d0" style={{ top: r.barTop }}>
-                {r.d0}
-              </span>
-              <span className="rv-d1" style={{ top: r.barTop + r.barH }}>
-                {r.d1}
-              </span>
-              <div className="rv-body">
-                <div className="rv-cov">
-                  {r.e.cover ? (
-                    <img src={coverUrl(r.e.cover, r.e.coverV)} alt="" loading="lazy" draggable={false} />
-                  ) : (
-                    <div className="rv-covempty" />
-                  )}
-                </div>
-                <div className="rv-txt">
-                  <div className="rv-t">
-                    {gradeIcon(r.e.reviewGrade) ? <span className="rv-grade">{gradeIcon(r.e.reviewGrade)}</span> : null}
-                    {r.e.title}
-                  </div>
-                  <div className="rv-a">
-                    {r.e.authors.join("、")}
-                    {r.e.seriesName ? " · " + r.e.seriesName + (r.e.seriesIndex != null ? " " + r.e.seriesIndex : "") : ""}
-                  </div>
-                  {/* 起止与天数在轴上已经标了，这行只留评分 */}
-                  {ratingText(r.e.rating) ? (
-                    <div className="rv-m">
-                      <span className="rv-rate">
-                        <b>★</b> {ratingText(r.e.rating)}
-                      </span>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
+        {previewP ? (
+          <div className="rd-vpreview" aria-live="polite">
+            {previewP.m} 月 {previewP.d} 日
+          </div>
+        ) : null}
       </div>
 
-      <ReadTip e={hover ? hover.e : null} anchor={hover ? hover.anchor : null} />
+      <section className="rd-vmain" aria-label="当月书目">
+        <header className="rd-vhead">
+          <div className="rd-vtitle">
+            <b>
+              {monthP.y} 年 {monthP.m} 月
+            </b>
+            <span className="rd-vsub">
+              焦点 {focusP.y}-{String(focusP.m).padStart(2, "0")}-{String(focusP.d).padStart(2, "0")}
+              {groups.length ? ` · ${groups.reduce((n, g) => n + g.n, 0)} 本` : " · 本月无记录"}
+            </span>
+          </div>
+          <div className="rd-vcontrols">
+            <button className="mini xs" onClick={() => moveMonth(-1)} disabled={month <= loMonth} title="上个月">
+              上月
+            </button>
+            <button className="mini xs" onClick={() => moveMonth(1)} disabled={month >= hiMonth} title="下个月">
+              下月
+            </button>
+            {!monthRecorded ? (
+              <button className="mini xs" onClick={jumpRecorded} title="跳到最近有记录的月份">
+                最近有记录
+              </button>
+            ) : null}
+          </div>
+        </header>
+
+        <div className="rd-vbooks" ref={booksRef}>
+          {groups.length ? (
+            groups.map((g) => (
+              <div className="rd-vgroup" key={g.key} data-day={dayStr(g.day)}>
+                <button className="rd-vgroup-h" onClick={() => commit(g.day)}>
+                  <b>
+                    {dayParts(g.day).m} 月 {dayParts(g.day).d} 日
+                  </b>
+                  <span>{g.n} 本</span>
+                  <i>{WEEK[new Date(g.day * DAY_MS).getUTCDay()]}</i>
+                </button>
+                {g.entries.map((e) => (
+                  <button
+                    key={e.id}
+                    className="rd-vbook"
+                    onClick={() => onPick(e.id)}
+                    title={e.title}
+                    data-id={e.id}
+                  >
+                    <span className="rd-vcov">
+                      {e.cover ? <img src={coverUrl(e.cover, e.coverV)} alt="" loading="lazy" /> : <i />}
+                    </span>
+                    <span className="rd-vtxt">
+                      <span className="rd-vt">{e.title}</span>
+                      <span className="rd-va">{e.authors.join("、") || "佚名"}</span>
+                      <span className="rd-vm">
+                        {e.end
+                          ? e.span
+                            ? `${e.start} 至 ${e.end}`
+                            : e.end
+                          : `${e.start} · 仅有开始日期`}
+                        {ratingText(e.rating) ? ` · ★ ${ratingText(e.rating)}` : ""}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))
+          ) : (
+            <div className="rd-vempty">
+              <p>本月没有记录</p>
+              <p className="dim">日期尺照常保留这个月的位置，可以跳到最近有记录的月份。</p>
+              {dayGroups.length ? (
+                <button className="mini" onClick={jumpRecorded}>
+                  跳到最近有记录
+                </button>
+              ) : (
+                <p className="dim">整库还没有填过读完日期的书。</p>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <div className="rd-vnav">
+        <ReadNav
+          ref={navRef}
+          vertical
+          bands={bands}
+          marks={marks}
+          range={range}
+          onSeek={seekWorld}
+        />
+      </div>
     </div>
   );
-}
+});
+
+export default ReadFeed;

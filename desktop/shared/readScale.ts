@@ -16,6 +16,8 @@
  */
 
 export const PXD = 3.6;
+/** 主界面用的固定月宽。与书多书少无关，缩放到同一年月时尺度稳定 */
+export const FIXED_MONTH_W = 168;
 /** 保留给旧断言用，连续日历里已经没有「压空档」这回事 */
 export const MAX_GAP = 320;
 /** 一本书在轴上要占的长度，两轨交错，所以一半就够 */
@@ -41,6 +43,28 @@ export function dayParts(n: number): { y: number; m: number; d: number } {
   return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
 }
 
+/** 这天所在月的月首。日期尺、月份分组都用它换算 */
+export function monthFirstOf(day: number): number {
+  const p = dayParts(day);
+  return dayNum(`${p.y}-${String(p.m).padStart(2, "0")}-01`);
+}
+
+/** 月份编号：年 × 12 + 月 − 1，跨年加减方便 */
+export function monthKeyOf(day: number): number {
+  const p = dayParts(day);
+  return p.y * 12 + p.m - 1;
+}
+
+/** 月份编号对应的月首 */
+export function monthFirstOfKey(key: number): number {
+  return monthFirst(key);
+}
+
+export function monthLength(day: number): number {
+  const key = monthKeyOf(day);
+  return monthFirst(key + 1) - monthFirst(key);
+}
+
 export interface Scale {
   /** 这天在轴上从哪开始 */
   xOf(day: number): number;
@@ -63,6 +87,11 @@ export interface BuildOpts {
   lanes?: number;
   /** 轴延伸到哪一天，传进来的应是今天的天序号 */
   until?: number;
+  /**
+   * 固定月宽。不传仍按最密的月份定宽（旧行为，老测试依赖它）；
+   * 主界面传 FIXED_MONTH_W，月份坐标就与书量脱钩。
+   */
+  fixedMonthW?: number;
 }
 
 interface Month {
@@ -75,13 +104,9 @@ interface Month {
   x0: number;
 }
 
-const monthKeyOf = (day: number) => {
-  const p = dayParts(day);
-  return p.y * 12 + p.m - 1;
-};
-
-const monthFirst = (key: number) =>
-  dayNum(`${Math.floor(key / 12)}-${String((key % 12) + 1).padStart(2, "0")}-01`);
+function monthFirst(key: number): number {
+  return dayNum(`${Math.floor(key / 12)}-${String((key % 12) + 1).padStart(2, "0")}-01`);
+}
 
 /**
  * 日期表由书落的日期构成，传进来什么顺序都行，内部排序去重。
@@ -129,6 +154,11 @@ export function buildScale(days: number[], o: BuildOpts = {}): Scale {
 
   let monthW = pxd * MONTH_SLOT;
   for (const u of months) if (u.natW > monthW) monthW = u.natW;
+  /* 固定宽模式：月宽由界面给定，不再被某一天集中录入的几十本撑开。
+     buildScale 的默认分支保持原样，老调用与老测试不必改 */
+  if (o.fixedMonthW != null && Number.isFinite(o.fixedMonthW) && o.fixedMonthW > 0) {
+    monthW = o.fixedMonthW;
+  }
   /* 月内每天一样宽：书只用来定月宽，不把某一天撑开。撑开的那一天会占掉十来天
      的宽度，而它仍旧只有一个日期，放大到看得见日刻度时那一大片就只有一根刻度，
      看着就像刻度被吃了。摊平之后每一天正好一格，一天一根，间距均匀 */
@@ -289,6 +319,95 @@ export function midDay(e: { start: string; end: string; anchor: string }): numbe
   const a = dayNum(e.start);
   const b = dayNum(e.end || e.anchor);
   return Number.isFinite(a) ? Math.round((a + b) / 2) : b;
+}
+
+/** 一条阅读记录的有效起止。end 是读完日；只有 start 时它是一个「开始点」 */
+export interface ReadBounds {
+  /** 轴上覆盖的起点 */
+  a: number;
+  /** 轴上覆盖的终点（含当天） */
+  b: number;
+  /** 只有开始日期，没有读完日 */
+  onlyStart: boolean;
+  /** 起止同一天 */
+  point: boolean;
+}
+
+export function readBounds(e: { start: string; end: string; anchor: string }): ReadBounds {
+  const s = dayNum(e.start);
+  const en = dayNum(e.end);
+  const hasS = Number.isFinite(s);
+  const hasE = Number.isFinite(en);
+  if (hasE) {
+    const a = hasS ? Math.min(s, en) : en;
+    return { a, b: Math.max(a, en), onlyStart: false, point: a === en };
+  }
+  if (hasS) return { a: s, b: s, onlyStart: true, point: true };
+  const an = dayNum(e.anchor);
+  return Number.isFinite(an)
+    ? { a: an, b: an, onlyStart: false, point: true }
+    : { a: NaN, b: NaN, onlyStart: false, point: true };
+}
+
+/** 读完日；只有开始日期时退回开始日。日历、书目分组一律按它 */
+export function finishDay(e: { start: string; end: string; anchor: string }): number {
+  const en = dayNum(e.end);
+  if (Number.isFinite(en)) return en;
+  const s = dayNum(e.start);
+  if (Number.isFinite(s)) return s;
+  return dayNum(e.anchor);
+}
+
+/** 最近一条有展示日期的记录。首次进时间线落到它上面 */
+export function latestRecordedDay(list: { start: string; end: string; anchor: string }[]): number {
+  let best = NaN;
+  for (const e of list) {
+    const d = finishDay(e);
+    if (Number.isFinite(d) && (!Number.isFinite(best) || d > best)) best = d;
+  }
+  return best;
+}
+
+export type BucketKind = "year" | "month" | "day";
+
+/** 缩得太远时按固定桶聚合读完标记。桶从全量数据算，所以平移时分组不会变 */
+export function bucketAt(monthPx: number): BucketKind {
+  if (monthPx < 42) return "year";
+  if (monthPx < 420) return "month";
+  return "day";
+}
+
+export interface ReadBucket<T> {
+  key: string;
+  /** 桶的代表日：年取元旦，月取月初，日就是那天 */
+  day: number;
+  n: number;
+  entries: T[];
+}
+
+export function finishBuckets<T extends { start: string; end: string; anchor: string }>(
+  list: T[],
+  kind: BucketKind
+): ReadBucket<T>[] {
+  const map = new Map<string, ReadBucket<T>>();
+  for (const e of list) {
+    const d = finishDay(e);
+    if (!Number.isFinite(d)) continue;
+    const p = dayParts(d);
+    const key =
+      kind === "year"
+        ? String(p.y)
+        : kind === "month"
+          ? `${p.y}-${String(p.m).padStart(2, "0")}`
+          : `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`;
+    const day = kind === "year" ? dayNum(`${p.y}-01-01`) : kind === "month" ? monthFirstOf(d) : d;
+    const b = map.get(key);
+    if (b) {
+      b.n++;
+      b.entries.push(e);
+    } else map.set(key, { key, day, n: 1, entries: [e] });
+  }
+  return [...map.values()].sort((a, b) => a.day - b.day);
 }
 
 /** 一段阅读在轴上盖住的世界坐标：从开始那天清晨读到读完那天深夜 */

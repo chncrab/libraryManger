@@ -4,24 +4,23 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { openDb, closeDb } from "./db";
 import type { DB } from "./db";
-import { listBooks, getBook, facets, seriesAvg, reviewOf } from "./services/bookService";
+import { listBooks, getBook, facets, seriesAvg } from "./services/bookService";
 import { updateBook, deleteBook, restoreBook, copyBook, copyBooks, setRead, setRating } from "./services/editService";
 import { categoryTree, createCategory, renameCategory, setCategoryParent, removeCategory, moveCategory } from "./services/categoryService";
+import { listReviews, counts } from "./services/reviewService";
+import { listSeries, renameSeries, seriesBooks } from "./services/seriesService";
+import { readReviewFile, reviewFileVersion } from "./services/reviewFiles";
 import {
-  listReviews,
-  counts,
-  createReview,
-  updateReview,
-  deleteReview,
-  deleteOrphan,
-  associateOrphan,
-  associateOrphanToSeries,
-  moveReview,
-  moveReviewToSeries,
-  moveReviewToBook,
-  reviewFileName
-} from "./services/reviewService";
-import { listSeries, renameSeries, seriesBooks, seriesReviewOf } from "./services/seriesService";
+  getIndexedReview,
+  readIndexedReview,
+  createFileReview,
+  updateFileReview,
+  moveFileReview,
+  deleteFileReview,
+  refreshLinkedReviewFront,
+  preserveLegacyReviewGrades
+} from "./services/reviewFileEdits";
+import { importFileReviews, exportFileReviews, listReviewMarkdown, bulkEditReviewFiles } from "./services/reviewFileTools";
 import { readTimeline, readStats } from "./services/readService";
 import {
   listFields,
@@ -51,19 +50,9 @@ import {
 } from "./services/coverFetch";
 import type { Http } from "./services/coverFetch";
 import { getSetting, setSetting } from "./services/settingsService";
-import { autoBackup, backupTo, listBackups } from "./services/backupService";
-import {
-  importReviewTexts,
-  exportAll,
-  syncDir,
-  readMdDir,
-  writeOne,
-  forgetFile,
-  dropMapping,
-  normalizeNames,
-  fillFront,
-  stripFront
-} from "./services/reviewIo";
+import { backupReviewLibrary, autoBackupWithReviews, listReviewBackups, isReviewSnapshot, restoreReviewLibrary } from "./services/reviewBackup";
+import { reconcileReviewFiles } from "./services/reviewFiles";
+import { ReviewRuntime } from "./services/reviewRuntime";
 import {
   pathsOf,
   ensureStructure,
@@ -101,6 +90,8 @@ let win: BrowserWindow | null = null;
    打开之后 db 与 paths 一起就位，所有服务都靠这两个 */
 let db: DB | null = null;
 let lib: LibraryPaths | null = null;
+let autoBackupTask: Promise<unknown> | null = null;
+let libraryBusy = false;
 
 const userData = () => app.getPath("userData");
 
@@ -125,73 +116,205 @@ function coverDir(): string {
   return lib ? lib.coverDir : "";
 }
 
+function reviewRecoveryDir(): string {
+  return lib ? path.join(lib.backupDir, "review-recovery") : "";
+}
+
+function announceReviewsChanged(): void {
+  win?.webContents.send("library:reviews-changed");
+}
+
+function announceReviewsWatch(ok: boolean, msg?: string): void {
+  win?.webContents.send("library:reviews-watch", { ok, msg: msg || "" });
+}
+
+function announceBackupsChanged(): void {
+  win?.webContents.send("backup:changed");
+}
+
+const reviewRuntime = new ReviewRuntime(
+  () => (db && lib ? { db, dir: lib.reviewDir, recoveryDir: reviewRecoveryDir() } : null),
+  (kind, id, r) => {
+    win?.webContents.send("reviews:saveState", kind, id, r);
+    if (r.ok) announceReviewsChanged();
+  }
+);
+
+function msgOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+async function flushReviews(why: string): Promise<{ ok: boolean; msg?: string }> {
+  try {
+    const r = await reviewRuntime.flushAll();
+    if (r && r.ok === false) return { ok: false, msg: (r as { msg?: string }).msg || `书评保存失败（${why}）` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, msg: msgOf(e) };
+  }
+}
+
 /* ---- 打开与切换书库 ---- */
 
-function openLibrary(root: string): { ok: boolean; msg?: string; root?: string; books: number } {
+function reviewDirHasMarkdown(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).some((f) => /\.md$/i.test(f));
+  } catch {
+    return false;
+  }
+}
+
+async function openLibrary(root: string): Promise<{ ok: boolean; msg?: string; root?: string; books: number }> {
+  if (libraryBusy) return { ok: false, msg: "书库正在打开或切换，请稍候", books: db ? counts(db).books : 0 };
+  libraryBusy = true;
+  try {
+    return await openLibraryUnlocked(root);
+  } finally {
+    libraryBusy = false;
+  }
+}
+
+async function openLibraryUnlocked(root: string): Promise<{ ok: boolean; msg?: string; root?: string; books: number }> {
   const target = path.resolve(root);
+  const flushed = await flushReviews("switch");
+  if (!flushed.ok) {
+    return { ok: false, msg: flushed.msg || "书评还没保存好，先不切换书库", books: db ? counts(db).books : 0 };
+  }
+  if (autoBackupTask) await autoBackupTask.catch(() => undefined);
   /* 换库时旧目录的监听先停，否则会拿着新库去同步旧路径 */
   stopWatch();
-  const p = ensureStructure(target);
-  /* 测试脚本会指定一个单独的 db 文件名，认这个覆盖 */
-  if (process.env.LIBRARY_DB && path.dirname(path.resolve(process.env.LIBRARY_DB)) === target) {
-    p.dbFile = path.resolve(process.env.LIBRARY_DB);
-  }
-  let conn: DB;
+  const prevLib = lib;
+  let conn: DB | null = null;
   try {
-    closeDb();
-    conn = openDb(p.dbFile);
-  } catch (e) {
-    db = null;
-    return { ok: false, msg: "这个文件夹里的库打不开：" + (e instanceof Error ? e.message : String(e)), books: 0 };
-  }
-  db = conn;
-  lib = p;
-  rememberRoot(userData(), target);
-
-  /* 老版本的「书评同步文件夹」是用户自己挑的。升级上来先把那边的 md 收进书库，
-     之后再按书库自己的 reviews 走。清掉设置，下次不会再扫一遍 */
-  const oldDir = getSetting(conn, "review_dir", "");
-  if (oldDir && path.resolve(oldDir) !== path.resolve(p.reviewDir) && fs.existsSync(oldDir)) {
-    const files = readMdDir(oldDir);
-    if (files.length) {
-      const got = importReviewTexts(conn, files, { dir: p.reviewDir });
-      console.log(`[library] 从旧同步目录收进 ${got.added + got.updated + got.orphan} 篇书评`);
+    const overrideDb = process.env.LIBRARY_DB && path.dirname(path.resolve(process.env.LIBRARY_DB)) === target
+      ? path.resolve(process.env.LIBRARY_DB)
+      : "";
+    const existing = isLibrary(target) || (!!overrideDb && fs.existsSync(overrideDb));
+    const p = ensureStructure(target, !existing);
+    /* 测试脚本会指定一个单独的 db 文件名，认这个覆盖 */
+    if (overrideDb) {
+      p.dbFile = overrideDb;
     }
-    setSetting(conn, "review_dir", "");
-  }
+    closeDb();
+    db = null;
+    lib = null;
+    conn = openDb(p.dbFile);
 
-  /* 打开就把 reviews 目录对齐一次：外面的改动收进来，库里新的写出去 */
-  runSync("open");
-  startWatch();
-  const n = counts(conn).books;
-  autoBackup(conn, p.backupDir, 8).catch((e) => console.error("[backup] 失败", e));
-  return { ok: true, root: p.root, books: n };
+    /* 旧库第一次对账前先留一份完整快照，备份失败就不动文件索引 */
+    const reconciled = getSetting(conn, "review_files_v1", "");
+    if (!reconciled && existing) {
+      let reviewDirReady = false;
+      try {
+        reviewDirReady = fs.lstatSync(p.reviewDir).isDirectory();
+      } catch {
+        reviewDirReady = false;
+      }
+      if (!reviewDirReady) {
+        if (listReviews(conn).length > 0) {
+          throw new Error("书评目录缺失，但旧库里已有书评数据。请把原 reviews 目录移回书库根目录后再打开。");
+        }
+        try {
+          fs.mkdirSync(p.reviewDir, { recursive: true });
+          if (!fs.lstatSync(p.reviewDir).isDirectory()) throw new Error("not dir");
+        } catch {
+          throw new Error("书评目录不可用");
+        }
+      }
+    }
+    if (!reconciled) {
+      if (reviewDirHasMarkdown(p.reviewDir) || listReviews(conn).length > 0) {
+        try {
+          await backupReviewLibrary(conn, p.reviewDir, p.backupDir, "migration");
+        } catch (e) {
+          throw new Error("旧书评迁移前备份失败：" + msgOf(e));
+        }
+      }
+      preserveLegacyReviewGrades(conn, p.reviewDir);
+    }
+    let rec: unknown = null;
+    try {
+      rec = reconcileReviewFiles(conn, p.reviewDir);
+    } catch (e) {
+      if (!reconciled) throw e;
+    }
+    const recErr = rec as { ok?: boolean; msg?: string } | null;
+    if (!reconciled && recErr && recErr.ok === false) {
+      throw new Error(recErr.msg || "书评文件对账失败");
+    }
+    setSetting(conn, "review_files_v1", "1");
+
+    const opened = conn;
+    db = opened;
+    lib = p;
+    conn = null;
+    rememberRoot(userData(), target);
+    startWatch();
+    const n = counts(opened).books;
+    autoBackupTask = autoBackupWithReviews(opened, p.reviewDir, p.backupDir, 8)
+      .catch((e) => console.error("[backup] 失败", e))
+      .finally(() => {
+        autoBackupTask = null;
+      });
+    return { ok: true, root: p.root, books: n };
+  } catch (e) {
+    if (conn) {
+      try {
+        closeDb();
+      } catch {
+        /* 新库没打开成功，关不掉也不影响恢复旧库 */
+      }
+    }
+    db = null;
+    lib = null;
+    if (prevLib) {
+      try {
+        const restored = openDb(prevLib.dbFile);
+        db = restored;
+        lib = prevLib;
+        startWatch();
+      } catch (re) {
+        console.error("[library] 恢复此前书库失败", re);
+      }
+    }
+    return { ok: false, msg: "这个文件夹里的库打不开：" + msgOf(e), books: db ? counts(db).books : 0 };
+  }
 }
 
 let watcher: fs.FSWatcher | null = null;
 let watchTimer: NodeJS.Timeout | null = null;
+let watchRetryTimer: NodeJS.Timeout | null = null;
 let syncing = false;
 let syncPending = false;
 
 /**
- * 盯着 reviews 目录。在文件夹里改 md、拖进来新的一份，界面这边几秒内跟着变。
- * 自己写盘也会触发这个事件，靠 exportAll 的「内容没变就不写」把手脚收住，
- * 否则会变成写盘 → 事件 → 同步 → 再写盘的死循环。
+ * 盯着 reviews 目录。普通事件延后到 2000ms 后统一对账一次。
+ * 只处理文件事件，不在 IPC 里做旧式全量 sync；目录没了关掉监听并等轻量 lstat 重试。
  */
 function startWatch(): void {
   stopWatch();
   if (!lib) return;
+  const dir = lib.reviewDir;
   try {
-    watcher = fs.watch(lib.reviewDir, { persistent: false }, (_ev, file) => {
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error("书评目录不可用");
+    watcher = fs.watch(dir, { persistent: false }, (_ev, file) => {
       if (file && !/\.md$/i.test(String(file))) return;
       scheduleSync("watch");
     });
+    watcher.on("error", (e) => {
+      console.error("[watch] 书评目录监听出错", e);
+      announceReviewsWatch(false, msgOf(e));
+      closeWatcherOnly();
+      scheduleWatchRetry();
+    });
+    announceReviewsWatch(true);
   } catch (e) {
     console.error("[watch] 书评目录监听失败", e);
+    announceReviewsWatch(false, msgOf(e));
+    scheduleWatchRetry();
   }
 }
 
-function stopWatch(): void {
+function closeWatcherOnly(): void {
   if (watcher) {
     try {
       watcher.close();
@@ -200,10 +323,36 @@ function stopWatch(): void {
     }
     watcher = null;
   }
+}
+
+function stopWatch(): void {
+  closeWatcherOnly();
   if (watchTimer) {
     clearTimeout(watchTimer);
     watchTimer = null;
   }
+  if (watchRetryTimer) {
+    clearTimeout(watchRetryTimer);
+    watchRetryTimer = null;
+  }
+}
+
+function scheduleWatchRetry(): void {
+  if (watchRetryTimer || !lib) return;
+  const dir = lib.reviewDir;
+  watchRetryTimer = setTimeout(() => {
+    watchRetryTimer = null;
+    if (!lib || lib.reviewDir !== dir) return;
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) throw new Error("not dir");
+    } catch {
+      scheduleWatchRetry();
+      return;
+    }
+    startWatch();
+    void runReconcile("recover");
+    announceReviewsChanged();
+  }, 2000);
 }
 
 function scheduleSync(why: string): void {
@@ -214,22 +363,30 @@ function scheduleSync(why: string): void {
   if (watchTimer) clearTimeout(watchTimer);
   watchTimer = setTimeout(() => {
     watchTimer = null;
-    runSync(why);
-  }, 700);
+    void runReconcile(why);
+  }, 2000);
 }
 
-function runSync(why: string): void {
+async function runReconcile(why: string): Promise<void> {
   if (!db || !lib) return;
+  if (syncing) {
+    syncPending = true;
+    return;
+  }
   syncing = true;
   try {
-    const out = syncDir(db, lib.reviewDir);
-    const changed = out.updated + out.added + out.orphan;
-    if (changed) {
-      console.log(`[sync:${why}] 收进改动 ${out.updated}，新增 ${out.added}，未匹配 ${out.orphan}`);
-      win?.webContents.send("library:reviews-changed");
+    const out = reconcileReviewFiles(db, lib.reviewDir);
+    const renamed = Number((out as { renamed?: number } | undefined)?.renamed || 0);
+    const removed = Number((out as { removed?: number } | undefined)?.removed || 0);
+    const added = Number((out as { added?: number } | undefined)?.added || 0);
+    const updated = Number((out as { updated?: number } | undefined)?.updated || 0);
+    if (renamed + removed + added + updated) {
+      console.log(`[reconcile:${why}] 重命名 ${renamed}，移除 ${removed}，新增 ${added}，更新 ${updated}`);
+      announceReviewsChanged();
     }
   } catch (e) {
-    console.error(`[sync:${why}] 失败`, e);
+    console.error(`[reconcile:${why}] 失败`, e);
+    announceReviewsWatch(false, msgOf(e));
   } finally {
     syncing = false;
     if (syncPending) {
@@ -237,18 +394,6 @@ function runSync(why: string): void {
       scheduleSync("pending");
     }
   }
-}
-
-/**
- * 书评写完、改绑、删除之后把文件跟上。
- * 改绑时不能先删旧文件再写新文件 —— 那等于重新生成一份，旧名字那份还可能在。
- * 正确做法是把旧名字摘下来交给 writeOne，由它做一次重命名。
- */
-function pushReview(kind: string, id: number, forgetKind?: string): void {
-  const dir = reviewDir();
-  if (!dir || !db) return;
-  const prev = forgetKind ? dropMapping(db, forgetKind, id) : "";
-  writeOne(db, dir, kind, id, prev);
 }
 
 interface WinState {
@@ -321,13 +466,47 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  win.on("close", () => {
-    if (win) saveWinState(win);
+  let allowClose = false;
+  let closing = false;
+  win.on("close", (e) => {
+    const w = win;
+    if (!w) return;
+    if (allowClose || appQuitting) {
+      saveWinState(w);
+      return;
+    }
+    e.preventDefault();
+    if (closing) return;
+    closing = true;
+    void (async () => {
+      try {
+        const saved = await flushReviews("close");
+        if (!saved.ok) {
+          await dialog.showMessageBox(w, {
+            type: "warning",
+            buttons: ["知道了"],
+            defaultId: 0,
+            cancelId: 0,
+            message: "书评还没保存成功",
+            detail: (saved.msg || "有些修改没有写进书评文件。") + "\n\n这次关闭已取消，请稍后重试。"
+          });
+          return;
+        }
+        if (autoBackupTask) await autoBackupTask.catch(() => undefined);
+        allowClose = true;
+        saveWinState(w);
+        w.close();
+      } finally {
+        closing = false;
+      }
+    })();
   });
   win.on("closed", () => {
     win = null;
   });
 }
+
+let appQuitting = false;
 
 const err = (e: unknown) => ({ ok: false, msg: e instanceof Error ? e.message : String(e) });
 
@@ -682,45 +861,138 @@ function registerIpc(): void {
   ipcMain.handle("books:get", (_e, id: string) => {
     const book = getBook(D(), id);
     if (!book) return null;
-    const review = reviewOf(D(), id);
+    let review = null;
+    try {
+      const rv = D().prepare("SELECT id FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(id) as any;
+      if (rv) review = readIndexedReview(D(), reviewDir(), "book", rv.id);
+    } catch (e) {
+      console.error("[review] 读书评失败", e);
+      review = null;
+    }
     return { book, review };
   });
   ipcMain.handle("books:facets", (_e, media?: string) => facets(D(), media || ""));
   ipcMain.handle("series:avg", (_e, id: number) => seriesAvg(D(), id));
   ipcMain.handle("series:list", (_e, mediaType?: string) => listSeries(D(), mediaType || ""));
   ipcMain.handle("series:books", (_e, id: number) => seriesBooks(D(), id));
-  ipcMain.handle("series:review", (_e, id: number) => seriesReviewOf(D(), id));
+  ipcMain.handle("series:review", (_e, id: number) => {
+    try {
+      const rv = D().prepare("SELECT id FROM reviews WHERE series_id = ? AND deleted_at IS NULL").get(id) as any;
+      if (!rv) return null;
+      return readIndexedReview(D(), reviewDir(), "series", rv.id);
+    } catch (e) {
+      console.error("[review] 读系列总评失败", e);
+      return null;
+    }
+  });
   /**
-   * 改系列名。库改完再看要不要动文件：系列总评的文件名由原名派生，
-   * 原名换了就重写一次，走 writeOne 做真改名。文件出错不影响库里已经是新名字。
+   * 改系列名。先落暂存的正文，再改库；原名换了就定点刷新系列总评头部，
+   * 正文与元数据保留。文件出错不影响库里已经是新名字。
    */
   ipcMain.handle("series:update", (_e, id: number, patch: SeriesPatch) => {
+    reviewRuntime.flushAll();
     const r = renameSeries(D(), id, patch);
     if (r.ok && r.renamed) {
-      const rv = seriesReviewOf(D(), id);
-      if (rv) writeOne(D(), reviewDir(), "series", rv.id);
+      try {
+        refreshLinkedReviewFront(D(), reviewDir(), reviewRecoveryDir(), { seriesId: id }, ["系列"]);
+        announceReviewsChanged();
+      } catch (e) {
+        console.error("[review] 刷新系列总评头部失败", e);
+      }
     }
     return r;
   });
   /* 阅读时间线与日历，只读。两屏共用同一次取回，界面切排布不重取 */
   ipcMain.handle("read:timeline", (_e, media?: string) => readTimeline(D(), media || ""));
   ipcMain.handle("read:stats", (_e, media?: string) => readStats(D(), media || ""));
-  ipcMain.handle("reviews:list", () => listReviews(D()));
+  /* 字数缓存：key 用「目录/文件名/版本」，单次只保留当前列表出现过的 key */
+  const mdLenCache = new Map<string, number>();
+  const mdLenKey = (dir: string, fileName: string, version: string) => dir + "\u0000" + fileName + "\u0000" + version;
+  ipcMain.handle("reviews:list", () => {
+    const dir = reviewDir();
+    const rows = listReviews(D()) as any[];
+    const keep = new Set<string>();
+    const list = rows.map((r) => {
+      const fileName = r.fileName || "";
+      const version = reviewFileVersion(D(), r.kind, r.id);
+      const key = mdLenKey(dir, fileName, version);
+      let length = mdLenCache.get(key);
+      if (length === undefined) {
+        let file: { raw: string; md: string; version: string } | null = null;
+        try {
+          file = fileName ? readReviewFile(dir, fileName) : null;
+        } catch {
+          file = null;
+        }
+        length = file ? file.md.length : 0;
+        mdLenCache.set(key, length);
+      }
+      keep.add(key);
+      return { ...r, md: "", fileName, fileVersion: version, length };
+    });
+    for (const k of mdLenCache.keys()) if (!keep.has(k)) mdLenCache.delete(k);
+    return list;
+  });
   /* 单篇导出用同一个命名规则，界面别自己拼文件名，否则和落盘那份对不上 */
-  ipcMain.handle("reviews:fileName", (_e, kind: string, id: number) => reviewFileName(D(), { kind, id }));
+  ipcMain.handle("reviews:fileName", (_e, kind: string, id: number) => getIndexedReview(D(), kind as any, id)?.fileName || "");
   ipcMain.handle("books:setRead", (_e, id: string, read: boolean) => setRead(D(), id, read));
-  ipcMain.handle("books:setRating", (_e, id: string, rating: number | null) => setRating(D(), id, rating));
+  ipcMain.handle("books:setRating", (_e, id: string, rating: number | null) => {
+    reviewRuntime.flushAll();
+    const r = setRating(D(), id, rating);
+    try {
+      refreshLinkedReviewFront(D(), reviewDir(), reviewRecoveryDir(), { bookId: id }, ["评分"]);
+      announceReviewsChanged();
+    } catch (e) {
+      console.error("[review] 刷新书评头部失败", e);
+    }
+    return r;
+  });
   ipcMain.handle("books:update", (_e, id: string, patch: BookPatch) => {
+    reviewRuntime.flushAll();
     const nb = updateBook(D(), id, patch || {}, coverDir());
-    /* 改了书名或作者，已落盘的书评文件名要跟着改 */
+    /* 改了书名或作者，已落盘的书评头部跟着改，正文与元数据保留 */
     if (nb) {
-      const rv = D().prepare("SELECT id FROM reviews WHERE book_id = ? AND deleted_at IS NULL").get(id) as any;
-      if (rv) pushReview("book", rv.id);
+      const p = patch || {};
+      const keys: Parameters<typeof refreshLinkedReviewFront>[4] = [];
+      if (Object.prototype.hasOwnProperty.call(p, "title")) keys.push("书籍");
+      if (Object.prototype.hasOwnProperty.call(p, "authors")) keys.push("作者");
+      if (Object.prototype.hasOwnProperty.call(p, "readDate")) keys.push("阅读时间");
+      if (Object.prototype.hasOwnProperty.call(p, "rating")) keys.push("评分");
+      if (Object.prototype.hasOwnProperty.call(p, "categories")) keys.push("分类");
+      if (keys.length) {
+        try {
+          refreshLinkedReviewFront(D(), reviewDir(), reviewRecoveryDir(), { bookId: id }, keys);
+          announceReviewsChanged();
+        } catch (e) {
+          console.error("[review] 刷新书评头部失败", e);
+        }
+      }
     }
     return nb;
   });
-  ipcMain.handle("books:delete", (_e, id: string) => deleteBook(D(), id));
-  ipcMain.handle("books:restore", (_e, id: string) => restoreBook(D(), id));
+  ipcMain.handle("books:delete", (_e, id: string) => {
+    reviewRuntime.flushAll();
+    const r = deleteBook(D(), id);
+    /* 文件不删，只通过对账更新关联，让界面重取 */
+    try {
+      reconcileReviewFiles(D(), reviewDir());
+      announceReviewsChanged();
+    } catch (e) {
+      console.error("[review] 移除书评关联失败", e);
+    }
+    return r;
+  });
+  ipcMain.handle("books:restore", (_e, id: string) => {
+    reviewRuntime.flushAll();
+    const r = restoreBook(D(), id);
+    try {
+      reconcileReviewFiles(D(), reviewDir());
+      announceReviewsChanged();
+    } catch (e) {
+      console.error("[review] 恢复书评关联失败", e);
+    }
+    return r;
+  });
   ipcMain.handle("books:copy", (_e, id: string) => copyBook(D(), id, coverDir()));
   ipcMain.handle("books:copyMany", (_e, ids: string[]) => copyBooks(D(), ids || [], coverDir()));
   ipcMain.handle("cats:tree", () => categoryTree(D()));
@@ -768,71 +1040,121 @@ function registerIpc(): void {
     return { ok: true, name };
   });
 
+  /* 新建：直接落一篇文件，磁盘有变化就通知界面重取 */
   ipcMain.handle("reviews:create", (_e, p: ReviewInput) => {
-    const r = createReview(D(), p || {});
-    if (r.ok && r.id) pushReview(p.bookId ? "book" : p.seriesId ? "series" : "draft", r.id);
-    return r;
-  });
-  ipcMain.handle("reviews:update", (_e, kind: string, id: number, p: ReviewPatch) => {
-    const r = updateReview(D(), kind, id, p || {});
-    if (!r.ok) return r;
-    if (kind === "orphan") {
-      writeOne(D(), reviewDir(), "orphan", id);
+    try {
+      const r = createFileReview(D(), reviewDir(), p || {});
+      if (r && r.ok) announceReviewsChanged();
       return r;
+    } catch (e) {
+      return err(e);
     }
-    const row = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
-    if (row) pushReview(row.book_id ? "book" : row.series_id ? "series" : "draft", id);
-    return r;
   });
-  /* 未匹配书评存在另一张表里，id 与 reviews 各从 1 起，按 id 硬删会删到别的书评，
-     所以 kind 必须由界面带上来 */
-  ipcMain.handle("reviews:delete", (_e, kind: string, id: number) => {
-    if (kind === "orphan") {
-      const o = deleteOrphan(D(), id);
-      if (o.ok) forgetFile(D(), reviewDir(), "orphan", id);
-      return o;
+  /* 更新：先把已经暂存的内容落盘，再即时写当前这篇，version/filename 由服务处理 */
+  ipcMain.handle("reviews:update", async (_e, kind: string, id: number, p: ReviewPatch) => {
+    const flushed = await flushReviews("update");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = updateFileReview(D(), reviewDir(), reviewRecoveryDir(), kind as any, id, p || {});
+      if (r && r.ok) announceReviewsChanged();
+      return r;
+    } catch (e) {
+      return err(e);
     }
-    const row = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
-    const r = deleteReview(D(), id);
-    if (r.ok && row) forgetFile(D(), reviewDir(), row.book_id ? "book" : row.series_id ? "series" : "draft", id);
-    return r;
   });
-  ipcMain.handle("reviews:associateOrphan", (_e, oid: number, bookId: string) => {
-    const r = associateOrphan(D(), oid, bookId);
-    if (r.ok && r.id) {
-      const prev = dropMapping(D(), "orphan", oid);
-      writeOne(D(), reviewDir(), "book", r.id, prev);
+  /* 未匹配与已挂靠的 id 各自独立，kind 由界面带上来 */
+  ipcMain.handle("reviews:delete", async (_e, kind: string, id: number) => {
+    const flushed = await flushReviews("delete");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = deleteFileReview(D(), reviewDir(), kind as any, id);
+      if (r && r.ok) announceReviewsChanged();
+      return r;
+    } catch (e) {
+      return err(e);
     }
-    return r;
   });
-  ipcMain.handle("reviews:move", (_e, kind: string, id: number, bookId: string) => {
+  ipcMain.handle("reviews:associateOrphan", async (_e, oid: number, bookId: string) => {
+    const flushed = await flushReviews("associate");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = moveFileReview(D(), reviewDir(), reviewRecoveryDir(), "orphan", oid, { bookId });
+      if (r && r.ok) announceReviewsChanged();
+      return r;
+    } catch (e) {
+      return err(e);
+    }
+  });
+  ipcMain.handle("reviews:move", async (_e, kind: string, id: number, bookId: string) => {
     /* 未匹配那条的 id 与 reviews 的 id 各从 1 起，按 id 硬查会命中另一篇不相干的书评 */
     if (kind === "orphan") return { ok: false, msg: "未匹配书评请用「关联到书籍」" };
-    const old = D().prepare("SELECT book_id, series_id FROM reviews WHERE id = ?").get(id) as any;
-    const r = moveReview(D(), id, bookId);
-    if (r.ok) pushReview("book", id, old?.series_id ? "series" : "book");
-    return r;
-  });
-  ipcMain.handle("reviews:moveToSeries", (_e, kind: string, id: number, seriesId: number) => {
-    if (kind === "orphan") {
-      const r = associateOrphanToSeries(D(), id, seriesId);
-      if (r.ok && r.id) {
-        const prev = dropMapping(D(), "orphan", id);
-        writeOne(D(), reviewDir(), "series", r.id, prev);
-      }
+    const flushed = await flushReviews("move");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = moveFileReview(D(), reviewDir(), reviewRecoveryDir(), kind as any, id, { bookId });
+      if (r && r.ok) announceReviewsChanged();
       return r;
+    } catch (e) {
+      return err(e);
     }
-    const old = D().prepare("SELECT series_id FROM reviews WHERE id = ?").get(id) as any;
-    const r = moveReviewToSeries(D(), id, seriesId);
-    if (r.ok) pushReview("series", id, old?.series_id ? "series" : "book");
-    return r;
   });
-  ipcMain.handle("reviews:moveToBook", (_e, kind: string, id: number, bookId: string) => {
+  ipcMain.handle("reviews:moveToSeries", async (_e, kind: string, id: number, seriesId: number) => {
+    const flushed = await flushReviews("moveSeries");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = moveFileReview(D(), reviewDir(), reviewRecoveryDir(), kind as any, id, { seriesId });
+      if (r && r.ok) announceReviewsChanged();
+      return r;
+    } catch (e) {
+      return err(e);
+    }
+  });
+  ipcMain.handle("reviews:moveToBook", async (_e, kind: string, id: number, bookId: string) => {
     if (kind === "orphan") return { ok: false, msg: "未匹配书评请用「关联到书籍」" };
-    const old = D().prepare("SELECT series_id FROM reviews WHERE id = ?").get(id) as any;
-    const r = moveReviewToBook(D(), id, bookId);
-    if (r.ok) pushReview("book", id, old?.series_id ? "series" : "book");
-    return r;
+    const flushed = await flushReviews("moveBook");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存好" };
+    try {
+      const r = moveFileReview(D(), reviewDir(), reviewRecoveryDir(), kind as any, id, { bookId });
+      if (r && r.ok) announceReviewsChanged();
+      return r;
+    } catch (e) {
+      return err(e);
+    }
+  });
+  /* 读正文、搜索、暂存、冲刷 */
+  ipcMain.handle("reviews:read", (_e, kind: string, id: number) => {
+    try {
+      return readIndexedReview(D(), reviewDir(), kind as any, id);
+    } catch (e) {
+      console.error("[review] 读正文失败", e);
+      return null;
+    }
+  });
+  ipcMain.handle("reviews:search", (_e, q: string) => {
+    const needle = String(q || "").trim().toLowerCase();
+    if (!needle) return [];
+    const dir = reviewDir();
+    const out: string[] = [];
+    for (const r of listReviews(D()) as any[]) {
+      if (!r.fileName) continue;
+      let file: { raw: string; md: string; version: string } | null = null;
+      try {
+        file = readReviewFile(dir, r.fileName);
+      } catch {
+        file = null;
+      }
+      if (!file) continue;
+      const body = file.md || file.raw || "";
+      if (body.toLowerCase().indexOf(needle) < 0) continue;
+      out.push(r.kind + ":" + r.id);
+    }
+    return out;
+  });
+  ipcMain.handle("reviews:stage", (_e, kind: string, id: number, p: ReviewPatch) => {
+    return reviewRuntime.stage(kind as any, id, p || {});
+  });
+  ipcMain.handle("reviews:flush", () => {
+    return reviewRuntime.flushAll();
   });
 
   ipcMain.handle("covers:pick", async (_e, bookId: string) => {
@@ -955,6 +1277,7 @@ function registerIpc(): void {
   ipcMain.handle("covers:batchState", () => batchState);
 
   /* ---- 书评导入导出：目录固定是书库里的 reviews ---- */
+  const ioFail = (e: unknown) => ({ ...err(e), added: 0, updated: 0, orphan: 0, skipped: 0, written: 0, msgs: [] as string[] });
   ipcMain.handle("reviews:importFiles", async () => {
     const r = await dialog.showOpenDialog(win!, {
       title: "选择书评 Markdown 文件",
@@ -962,8 +1285,11 @@ function registerIpc(): void {
       filters: [{ name: "Markdown", extensions: ["md", "markdown", "txt"] }]
     });
     if (r.canceled || !r.filePaths.length) return null;
-    const files = r.filePaths.map((p) => ({ name: path.basename(p), text: fs.readFileSync(p, "utf8") }));
-    return importReviewTexts(D(), files, { dir: reviewDir() });
+    try {
+      return importFileReviews(D(), reviewDir(), r.filePaths);
+    } catch (e) {
+      return ioFail(e);
+    }
   });
   ipcMain.handle("reviews:importFolder", async () => {
     const r = await dialog.showOpenDialog(win!, {
@@ -971,7 +1297,11 @@ function registerIpc(): void {
       properties: ["openDirectory"]
     });
     if (r.canceled || !r.filePaths[0]) return null;
-    return importReviewTexts(D(), readMdDir(r.filePaths[0]), { dir: reviewDir() });
+    try {
+      return importFileReviews(D(), reviewDir(), listReviewMarkdown(r.filePaths[0]));
+    } catch (e) {
+      return ioFail(e);
+    }
   });
   /* 导出到书库以外的地方，当一份可读的备份 */
   ipcMain.handle("reviews:export", async () => {
@@ -982,21 +1312,34 @@ function registerIpc(): void {
     });
     if (r.canceled || !r.filePaths[0]) return null;
     try {
-      return exportAll(D(), r.filePaths[0]);
+      return exportFileReviews(D(), reviewDir(), r.filePaths[0]);
     } catch (e) {
-      return { ...err(e), added: 0, updated: 0, orphan: 0, skipped: 0, written: 0, msgs: [] };
+      return ioFail(e);
     }
   });
   ipcMain.handle("reviews:dirInfo", () => {
     const dir = reviewDir();
+    let exist = false;
     let files = 0;
-    if (dir && fs.existsSync(dir)) files = fs.readdirSync(dir).filter((f) => /\.md$/i.test(f)).length;
-    return { dir, exist: !!dir && fs.existsSync(dir), files, auto: true };
+    if (dir) {
+      try {
+        const st = fs.lstatSync(dir);
+        if (st.isDirectory()) {
+          exist = true;
+          files = fs.readdirSync(dir).filter((f) => /\.md$/i.test(f)).length;
+        }
+      } catch {
+        exist = false;
+      }
+    }
+    return { dir, exist, files, auto: true };
   });
   ipcMain.handle("reviews:sync", () => {
     if (!db || !lib) return null;
     try {
-      return syncDir(db, lib.reviewDir);
+      const r = reconcileReviewFiles(D(), reviewDir());
+      if (r) announceReviewsChanged();
+      return r;
     } catch (e) {
       console.error("[review] 同步失败", e);
       return null;
@@ -1006,7 +1349,9 @@ function registerIpc(): void {
   ipcMain.handle("reviews:rename", () => {
     if (!db || !lib) return null;
     try {
-      return normalizeNames(db, lib.reviewDir);
+      const r = bulkEditReviewFiles(D(), reviewDir(), lib.backupDir, "rename");
+      if (r) announceReviewsChanged();
+      return r;
     } catch (e) {
       console.error("[review] 重命名失败", e);
       return null;
@@ -1016,7 +1361,9 @@ function registerIpc(): void {
   ipcMain.handle("reviews:fillFront", () => {
     if (!db || !lib) return null;
     try {
-      return fillFront(db, lib.reviewDir, lib.backupDir);
+      const r = bulkEditReviewFiles(D(), reviewDir(), lib.backupDir, "fill");
+      if (r) announceReviewsChanged();
+      return r;
     } catch (e) {
       console.error("[review] 补标签失败", e);
       return null;
@@ -1026,7 +1373,9 @@ function registerIpc(): void {
   ipcMain.handle("reviews:stripFront", () => {
     if (!db || !lib) return null;
     try {
-      return stripFront(db, lib.reviewDir, lib.backupDir);
+      const r = bulkEditReviewFiles(D(), reviewDir(), lib.backupDir, "strip");
+      if (r) announceReviewsChanged();
+      return r;
     } catch (e) {
       console.error("[review] 撤销标签失败", e);
       return null;
@@ -1035,7 +1384,11 @@ function registerIpc(): void {
   ipcMain.handle("reviews:openDir", async () => {
     const dir = reviewDir();
     if (!dir) return false;
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) return false;
+    } catch {
+      return false;
+    }
     await shell.openPath(dir);
     return true;
   });
@@ -1043,15 +1396,19 @@ function registerIpc(): void {
   /* ---- 备份恢复 ---- */
   ipcMain.handle("backup:now", async () => {
     if (!lib) return null;
-    const r = await dialog.showSaveDialog(win!, {
-      title: "备份数据库",
-      defaultPath: path.join(lib.backupDir, "library-" + new Date().toISOString().slice(0, 10) + ".db"),
-      filters: [{ name: "SQLite", extensions: ["db"] }]
+    const flushed = await flushReviews("backup");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存成功" };
+    const r = await dialog.showOpenDialog(win!, {
+      title: "选择备份保存到哪里",
+      buttonLabel: "备份到这个文件夹",
+      properties: ["openDirectory", "createDirectory"]
     });
-    if (r.canceled || !r.filePath) return null;
+    if (r.canceled || !r.filePaths[0] || !lib) return null;
     try {
-      await backupTo(D(), r.filePath);
-      return { ok: true, file: r.filePath };
+      const file = await backupReviewLibrary(D(), lib.reviewDir, r.filePaths[0]);
+      announceBackupsChanged();
+      announceReviewsChanged();
+      return { ok: true, file };
     } catch (e) {
       return err(e);
     }
@@ -1062,7 +1419,7 @@ function registerIpc(): void {
     await shell.openPath(lib.backupDir);
     return true;
   });
-  ipcMain.handle("backup:list", () => (lib ? listBackups(lib.backupDir) : []));
+  ipcMain.handle("backup:list", () => (lib ? listReviewBackups(lib.backupDir) : []));
   ipcMain.handle("backup:restore", async () => {
     if (!lib) return null;
     const r = await dialog.showOpenDialog(win!, {
@@ -1072,25 +1429,45 @@ function registerIpc(): void {
     });
     if (r.canceled || !r.filePaths[0]) return null;
     const pick = r.filePaths[0];
+    const snapshot = isReviewSnapshot(pick);
     const sure = await dialog.showMessageBox(win!, {
       type: "warning",
       buttons: ["取消", "覆盖并重启"],
       defaultId: 1,
       cancelId: 0,
-      message: "用这份备份覆盖当前数据库？",
-      detail: pick + "\n\n当前库会先自动备份一份到 backups 目录，然后软件重启。"
+      message: snapshot ? "用这份备份覆盖当前数据库和书评目录？" : "用这份备份覆盖当前数据库？",
+      detail:
+        pick +
+        "\n\n" +
+        (snapshot ? "数据库和书评目录会一起被替换。" : "只替换数据库文件，不会改动书评目录。") +
+        "\n当前库会先自动备份一份到 backups 目录，然后软件重启。"
     });
     if (sure.response !== 1) return { ok: false, msg: "已取消" };
+    const flushed = await flushReviews("restore");
+    if (!flushed.ok) return { ok: false, msg: flushed.msg || "书评还没保存成功" };
+    if (autoBackupTask) await autoBackupTask.catch(() => undefined);
+    const savedLib = lib;
+    const target = savedLib.dbFile;
     try {
-      await autoBackup(D(), lib.backupDir, 8);
-      const target = lib.dbFile;
+      await backupReviewLibrary(D(), savedLib.reviewDir, savedLib.backupDir, "migration");
+      const flushedAgain = await flushReviews("restore");
+      if (!flushedAgain.ok) return { ok: false, msg: flushedAgain.msg || "书评还没保存成功" };
+      stopWatch();
       closeDb();
       db = null;
-      fs.copyFileSync(pick, target);
+      restoreReviewLibrary(pick, target, savedLib.reviewDir);
       app.relaunch();
       app.exit(0);
       return { ok: true, msg: "正在重启" };
     } catch (e) {
+      try {
+        const restored = openDb(target);
+        db = restored;
+        lib = savedLib;
+        startWatch();
+      } catch (re) {
+        console.error("[backup] 恢复失败后重连书库失败", re);
+      }
       return err(e);
     }
   });
@@ -1145,7 +1522,7 @@ if (!app.requestSingleInstanceLock()) {
     const remembered = readConfig(userData()).root;
     const start = env && isLibrary(env) ? env : remembered && isLibrary(remembered) ? remembered : "";
     if (start) {
-      const r = openLibrary(start);
+      const r = await openLibrary(start);
       if (r.ok) console.log(`[library] 已打开 ${r.root}，${r.books} 本`);
       else console.error("[library] 打开失败", r.msg);
     } else {
@@ -1160,11 +1537,43 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("window-all-closed", () => {
-    stopWatch();
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("before-quit", () => {
+  let quitAllowed = false;
+  let quitFlushing = false;
+  app.on("before-quit", (e) => {
+    if (quitAllowed) {
+      return;
+    }
+    e.preventDefault();
+    if (quitFlushing) return;
+    quitFlushing = true;
+    void (async () => {
+      try {
+        const saved = await flushReviews("quit");
+        if (!saved.ok) {
+          await dialog.showMessageBox({
+            type: "warning",
+            buttons: ["知道了"],
+            defaultId: 0,
+            cancelId: 0,
+            message: "书评还没保存成功",
+            detail: (saved.msg || "有些修改没有写进书评文件。") + "\n\n这次退出已取消，请稍后重试。"
+          });
+          return;
+        }
+        if (autoBackupTask) await autoBackupTask.catch(() => undefined);
+        appQuitting = true;
+        quitAllowed = true;
+        app.quit();
+      } finally {
+        quitFlushing = false;
+      }
+    })();
+  });
+
+  app.on("will-quit", () => {
     stopWatch();
     closeDb();
   });

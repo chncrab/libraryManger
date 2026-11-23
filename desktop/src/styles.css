@@ -439,6 +439,54 @@ button {
   white-space: nowrap;
 }
 .rvm-body { flex: 1; overflow-y: auto; padding: 16px 20px 60px; max-width: 860px; }
+.rvm-fm {
+  flex: none;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel, transparent);
+}
+.rvm-fm-h { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.rvm-fm-t { font-size: 12px; color: var(--fg3); }
+.rvm-fm-note { font-size: 11px; color: var(--fg3); }
+.rvm-fm-list,
+.rvm-fm-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); max-width: 860px; }
+.rvm-fm-list { gap: 3px 14px; margin-top: 4px; }
+.rvm-fm-wide,
+.rvm-fm-add { grid-column: 1 / -1; }
+.rvm-fm-item { display: flex; gap: 8px; font-size: 12px; line-height: 1.45; }
+.rvm-fm-k { color: var(--fg3); min-width: 64px; flex: none; }
+.rvm-fm-v { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rvm-fm-none { color: var(--fg3); font-size: 12px; }
+.rvm-fm-edit { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px 14px; margin-top: 6px; }
+.rvm-fm-row { display: flex; gap: 6px; align-items: flex-end; }
+.rvm-fm-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--fg3);
+  min-width: 0;
+}
+.rvm-fm-row label.rvm-fm-v { flex: 1; }
+.rvm-fm-row input,
+.rvm-fm-row select,
+.rvm-fm-row textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg, transparent);
+  color: var(--fg);
+}
+.rvm-fm-row textarea { resize: vertical; min-height: 44px; white-space: pre; }
+.rvm-fm-del { flex: none; }
+.rvm-fm-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: var(--fg3); }
+.rvm-fm-err { color: var(--danger, #c33); font-size: 12px; margin: 4px 0; }
 .rvm-g { flex: none; font-size: 12px; }
 .rvm-gs { display: flex; gap: 3px; flex: none; }
 .gbtn {

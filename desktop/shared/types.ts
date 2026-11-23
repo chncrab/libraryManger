@@ -310,6 +310,10 @@ export interface ReviewRow {
   fileName: string;
   happenedAt: string;
   updatedAt: string;
+  /** 文件内容哈希，用于判定外部改动与冲突 */
+  fileVersion?: string;
+  /** 正文字节数，列表页不需要每次读文件 */
+  length?: number;
   /** 书评、系列总评、新建草稿、未匹配四种来源，id 各自独立，前端 key 要带上它 */
   kind: "book" | "series" | "draft" | "orphan";
   /** 系列总评带上系列显示名，导出文件名要用 */
@@ -317,6 +321,17 @@ export interface ReviewRow {
   /** 所属书籍的作者，导出成「作者-《书名》书评.md」要用 */
   author?: string;
 }
+
+export interface ReviewFrontmatterField {
+  key: string;
+  value: string;
+}
+
+export type ReviewFileContent = ReviewRow & {
+  raw: string;
+  version: string;
+  frontmatter: ReviewFrontmatterField[];
+};
 
 export interface ReviewInput {
   bookId?: string | null;
@@ -332,12 +347,22 @@ export interface ReviewPatch {
   md?: string;
   happenedAt?: string;
   name?: string;
+  frontmatter?: ReviewFrontmatterField[];
+  expectedVersion?: string;
+  expectedFileName?: string;
+  fileName?: string;
+  editRevision?: number;
 }
 
 export interface RvResult {
   ok: boolean;
   id?: number;
   msg?: string;
+  version?: string;
+  recoveryPath?: string;
+  kind?: "book" | "series" | "draft" | "orphan" | string;
+  fileName?: string;
+  editRevision?: number;
 }
 
 /** 导入或同步一批 md 之后的汇总 */
@@ -524,6 +549,17 @@ export interface BooklibApi {
   copyLibraryTo(): Promise<{ ok: boolean; msg?: string; files?: number; dir?: string } | null>;
   /** 外部改了 reviews 里的 md，主进程同步完之后通知界面重取 */
   onReviewsChanged(cb: () => void): () => void;
+
+  /** 即时读取被索引书评的实际文件正文；缺失返回 null */
+  readReview(kind: string, id: number): Promise<ReviewFileContent | null>;
+  /** 在 reviews 文件正文里搜索，返回 kind:id[] */
+  searchReviewText(q: string): Promise<string[]>;
+  /** 暂存一次编辑，主进程 2 秒防抖后写盘 */
+  stageReview(kind: string, id: number, p: ReviewPatch): Promise<RvResult>;
+  /** 立即把所有暂存写盘 */
+  flushReviews(): Promise<RvResult>;
+  /** 主进程完成写盘或冲突时的通知 */
+  onReviewSaveState(cb: (kind: string, id: number, result: RvResult) => void): () => void;
 
   listBooks(q: BookQuery): Promise<ListResult>;
   getBook(id: string): Promise<{ book: BookRow; review: { md: string; grade: string; happenedAt: string } | null } | null>;

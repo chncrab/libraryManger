@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../api";
 import { mdToHtml } from "../markdown";
 import { copyText } from "../clip";
@@ -7,7 +7,8 @@ import Confirm from "./Confirm";
 import BookPicker from "./BookPicker";
 import SeriesPicker from "./SeriesPicker";
 import RichEditor, { type RichHandle } from "./RichEditor";
-import type { ReviewIoSummary, ReviewRow } from "../../shared/types";
+import ReviewFrontmatter, { type FrontmatterBaseline } from "./ReviewFrontmatter";
+import type { ReviewFrontmatterField, ReviewIoSummary, ReviewRow } from "../../shared/types";
 
 interface Props {
   reviews: ReviewRow[];
@@ -38,6 +39,11 @@ const KIND_TAG: Record<string, string> = { series: "系列", draft: "草稿", or
 /* 系列名有的本身自带书名号，外面不要再套一层 */
 const bracket = (s: string) => (/^[《〈【]/.test(s || "") ? s : "《" + (s || "") + "》");
 
+type Snap = { md: string; raw: string; version: string; fileName: string; frontmatter: ReviewFrontmatterField[] };
+
+const fileNameOf = (r: ReviewRow | null | undefined) =>
+  (r as (ReviewRow & { fileName?: string }) | null | undefined)?.fileName || r?.title || "(未命名)";
+
 /* 书评库：左栏是清单，中间是正文。正文可直接编辑，停手 700 毫秒自动落库 */
 export default function ReviewLib({
   reviews,
@@ -55,8 +61,14 @@ export default function ReviewLib({
   const [grade, setGrade] = useState("all");
 
   const [editing, setEditing] = useState(false);
+  const [fmEdit, setFmEdit] = useState<FrontmatterBaseline | null>(null);
+  const [fmBusy, setFmBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [stat, setStat] = useState("");
+  const [snap, setSnap] = useState<Snap | null>(null);
+  const [hits, setHits] = useState<Set<string> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [editorEpoch, setEditorEpoch] = useState(0);
 
   const [ctx, setCtx] = useState<{ x: number; y: number; items: CtxItem[]; row: ReviewRow } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -64,6 +76,7 @@ export default function ReviewLib({
   const [pick, setPick] = useState<ReviewRow | null>(null);
   const [pickSer, setPickSer] = useState<ReviewRow | null>(null);
   const [stripAsk, setStripAsk] = useState(false);
+  const [renameAsk, setRenameAsk] = useState<{ row: ReviewRow; key: string; value: string } | null>(null);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState("");
   const richRef = useRef<RichHandle | null>(null);
@@ -84,71 +97,252 @@ export default function ReviewLib({
     const out = reviews.filter((r) => {
       if (grade !== "all" && (r.grade || "normal") !== grade) return false;
       if (!k) return true;
-      return (r.title || "").toLowerCase().indexOf(k) >= 0 || (r.md || "").toLowerCase().indexOf(k) >= 0;
+      return (
+        fileNameOf(r).toLowerCase().indexOf(k) >= 0 ||
+        (r.title || "").toLowerCase().indexOf(k) >= 0 ||
+        !!hits?.has(keyOf(r))
+      );
     });
     out.sort((a, b) => {
       if (sort === "title") return (a.title || "").localeCompare(b.title || "", "zh");
-      if (sort === "len") return (b.md || "").length - (a.md || "").length;
+      if (sort === "len") return (b.length || 0) - (a.length || 0);
       if (sort === "grade") return (rank[a.grade || "normal"] ?? 1) - (rank[b.grade || "normal"] ?? 1);
       return String(b.happenedAt || "").localeCompare(String(a.happenedAt || ""));
     });
     return out;
-  }, [reviews, q, sort, grade]);
+  }, [reviews, q, sort, grade, hits]);
 
   /* 换筛选后当前选中的那条可能被筛掉，自动落到第一条 */
   const cur = list.find((r) => keyOf(r) === selKey) || list[0] || null;
   const curKey = cur ? keyOf(cur) : "";
+  const dirBad = !!dirInfo && !dirInfo.exist;
+
+  const curRef = useRef<ReviewRow | null>(null);
+  const snapRef = useRef<Snap | null>(null);
+  const editingRef = useRef(false);
+  const draftRef = useRef("");
+  const dirBadRef = useRef(false);
+  const revRef = useRef(0);
+  const sentRef = useRef<{ rev: number; md: string } | null>(null);
+  const activeKeyRef = useRef("");
+  const readSeq = useRef(0);
+  const wantEdit = useRef<string | null>(null);
+  const sayRef = useRef(say);
+  curRef.current = cur;
+  snapRef.current = snap;
+  editingRef.current = editing;
+  draftRef.current = draft;
+  dirBadRef.current = dirBad;
+  sayRef.current = say;
+  activeKeyRef.current = curKey;
+
+  const flushNow = useCallback(async () => {
+    try {
+      const r = await api.flushReviews();
+      if (r && !r.ok && r.recoveryPath) sayRef.current?.("保存冲突，恢复文件：" + r.recoveryPath);
+      return r;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const selectKey = (k: string | null) => {
+    if (k === selKey) return;
+    void flushNow();
+    setFmEdit(null);
+    setFmBusy(false);
+    setRenameAsk(null);
+    setSelKey(k);
+  };
+
+  const loadRow = useCallback(async (row: ReviewRow, key: string, external: boolean) => {
+    const seq = ++readSeq.current;
+    setLoading(true);
+    try {
+      const c = await api.readReview(row.kind, row.id);
+      if (seq !== readSeq.current || activeKeyRef.current !== key) return;
+      const dirtyNow = editingRef.current && draftRef.current !== (snapRef.current?.md ?? "");
+      if (dirtyNow) return;
+      if (!c) {
+        setSnap(null);
+        setStat(dirBadRef.current ? "书评目录不可用" : "读取失败");
+        return;
+      }
+      const s: Snap = {
+        md: c.md || "",
+        raw: c.raw || "",
+        version: c.version || row.fileVersion || "",
+        fileName: fileNameOf(c as any),
+        frontmatter: c.frontmatter || []
+      };
+      setSnap(s);
+      if (external) setEditorEpoch((e) => e + 1);
+      setDraft(s.md);
+      setStat("");
+      if (wantEdit.current === key) {
+        wantEdit.current = null;
+        setEditing(true);
+        setDraft(s.md);
+        revRef.current = 0;
+        sentRef.current = null;
+        setStat("");
+        setTimeout(() => richRef.current?.focus(), 60);
+      }
+    } catch {
+      if (seq === readSeq.current) setStat("读取失败");
+    } finally {
+      if (seq === readSeq.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const k = q.trim();
+    if (!k) {
+      setHits(null);
+      return;
+    }
+    let alive = true;
+    const t = window.setTimeout(async () => {
+      try {
+        const ids = await api.searchReviewText(k);
+        if (alive) setHits(new Set(ids));
+      } catch {
+        if (alive) setHits(new Set());
+      }
+    }, 180);
+    return () => {
+      alive = false;
+      window.clearTimeout(t);
+    };
+  }, [q]);
 
   /* 从系列弹层切过来，等清单里有了这一篇再选中 */
   useEffect(() => {
     if (!focusKey) return;
     if (reviews.some((r) => keyOf(r) === focusKey)) {
-      setSelKey(focusKey);
+      selectKey(focusKey);
       onFocusDone?.();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusKey, reviews, onFocusDone]);
 
-  /* 新建或右键「编辑书评」时，清单要先刷新才会切到那一篇，
-     这段时间里 curKey 还会落在旧值上，靠这个记下要进编辑的那条，
-     等它真的成为当前项再打开编辑区，否则会被切篇的复位逻辑立刻关掉 */
-  const wantEdit = useRef<string | null>(null);
   const enterEdit = (r: ReviewRow, focus = true) => {
+    if (fmEdit || fmBusy) return;
     const k = keyOf(r);
-    setSelKey(k);
     wantEdit.current = k;
+    if (k !== curKey) {
+      selectKey(k);
+      return;
+    }
+    if (!snap) {
+      setStat("读取中…");
+      void loadRow(r, k, false);
+      return;
+    }
+    setEditing(true);
+    setDraft(snap.md);
+    revRef.current = 0;
+    sentRef.current = null;
+    setStat("");
     if (focus) setTimeout(() => richRef.current?.focus(), 80);
   };
 
-  /* 切到另一篇时退出编辑，正文换成新的那一篇 */
+  const startEdit = () => {
+    if (cur) enterEdit(cur);
+  };
+
+  /* 切到另一篇时退出编辑。主进程已经持有 staged 草稿，离开前立刻 flush。 */
   useEffect(() => {
-    if (cur && wantEdit.current === keyOf(cur)) {
-      wantEdit.current = null;
-      setEditing(true);
-      setDraft(cur.md || "");
-      setStat("");
-      setTimeout(() => richRef.current?.focus(), 80);
-      return;
-    }
+    activeKeyRef.current = curKey;
     setEditing(false);
-    setDraft(cur?.md || "");
+    setFmEdit(null);
+    setFmBusy(false);
+    setDraft("");
+    setSnap(null);
+    revRef.current = 0;
+    sentRef.current = null;
     setStat("");
-  }, [curKey]);
+    const row = curRef.current;
+    if (row) void loadRow(row, curKey, false);
+    return () => {
+      void flushNow();
+    };
+  }, [curKey, loadRow, flushNow]);
+
+  /* 外部目录变化才重读当前正文；自己保存后的列表刷新不重挂编辑器，避免光标复位。 */
+  useEffect(() => {
+    const off = api.onReviewsChanged(() => {
+      const row = curRef.current;
+      const key = activeKeyRef.current;
+      if (!row || !key) return;
+      if (editingRef.current && draftRef.current !== (snapRef.current?.md ?? "")) return;
+      void loadRow(row, key, true);
+    });
+    return off;
+  }, [loadRow]);
 
   useEffect(() => {
-    if (!editing || !cur) return;
-    if (draft === cur.md) return;
-    const t = window.setTimeout(async () => {
-      setStat("保存中…");
-      const r = await api.updateReview(cur.kind, cur.id, { md: draft });
-      setStat(r.ok ? "已保存" : r.msg || "保存失败");
-      if (r.ok) {
+    const off = api.onReviewSaveState((kind, id, result) => {
+      const key = kind + ":" + id;
+      if (key !== activeKeyRef.current) return;
+      if (!result.ok) {
+        setStat(result.msg || "保存失败");
+        if (result.recoveryPath) sayRef.current?.("保存失败，恢复文件：" + result.recoveryPath);
+        return;
+      }
+      const rev = result.editRevision;
+      if (rev != null && rev !== revRef.current) {
+        setStat("待写入…");
+        return;
+      }
+      const sent = sentRef.current;
+      if (sent && rev != null && sent.rev === rev) {
+        setSnap((s) => ({
+          md: sent.md,
+          raw: "",
+          version: result.version || "",
+          fileName: result.fileName || fileNameOf(curRef.current),
+          frontmatter: s?.frontmatter || snapRef.current?.frontmatter || []
+        }));
+        setStat("已保存");
         onChanged();
         onRefreshDir?.();
+        return;
       }
-    }, 700);
-    return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, editing, curKey]);
+      if (rev == null && result.version) {
+        setSnap((s) => (s ? { ...s, version: result.version || s.version, fileName: result.fileName || s.fileName } : s));
+        setStat("已保存");
+      }
+    });
+    return off;
+  }, [onChanged, onRefreshDir]);
+
+  const onDraft = (md: string) => {
+    const row = curRef.current;
+    if (!row) return;
+    setDraft(md);
+    const base = snapRef.current;
+    if (!base) return;
+    const rev = ++revRef.current;
+    sentRef.current = { rev, md };
+    setStat("待写入…");
+    void api
+      .stageReview(row.kind, row.id, {
+        md,
+        expectedFileName: base.fileName,
+        expectedVersion: base.version,
+        editRevision: rev
+      })
+      .then((r) => {
+        if (!r.ok && sentRef.current?.rev === rev) {
+          setStat(r.msg || "保存失败");
+          if (r.recoveryPath) sayRef.current?.("保存失败，恢复文件：" + r.recoveryPath);
+        }
+      })
+      .catch(() => {
+        if (sentRef.current?.rev === rev) setStat("保存失败");
+      });
+  };
 
   const addNew = async () => {
     const r = await api.createReview({ name: "新书评", grade: "normal", md: "" });
@@ -158,7 +352,7 @@ export default function ReviewLib({
     }
     onChanged();
     wantEdit.current = "draft:" + r.id;
-    setSelKey("draft:" + r.id);
+    selectKey("draft:" + r.id);
   };
 
   const setGradeOf = async (g: string) => {
@@ -171,13 +365,14 @@ export default function ReviewLib({
   };
 
   const exportMd = async (r: ReviewRow) => {
-    /* 名字由主进程给，跟落盘那份完全一致，不再在界面自己拼 */
-    const got = await api.reviewFileName(r.kind, r.id);
-    const base =
-      got ||
-      (r.kind === "series" ? bracket(r.seriesLabel || r.title) + "系列" : (r.title || "书评") + " - 书评");
+    const curFile = await api.readReview(r.kind, r.id).catch(() => null);
+    if (!curFile) {
+      say(dirBad ? "书评目录不可用，读不到磁盘上的 Markdown" : "读不到这篇的 Markdown");
+      return;
+    }
+    const base = fileNameOf(curFile as any) || fileNameOf(r);
     const name = /\.md$/i.test(base) ? base : base + ".md";
-    const blob = new Blob([r.md || ""], { type: "text/markdown;charset=utf-8" });
+    const blob = new Blob([curFile.raw || ""], { type: "text/markdown;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = name.replace(/[\\/:*?"<>|]/g, "_");
@@ -187,14 +382,77 @@ export default function ReviewLib({
 
   /* 手动保存：不等那 0.7 秒，点了就落库并写 md */
   const saveNow = async () => {
-    if (!cur) return;
-    setStat("保存中…");
-    const r = await api.updateReview(cur.kind, cur.id, { md: draft });
-    setStat(r.ok ? "已保存" : r.msg || "保存失败");
-    if (r.ok) {
+    const row = curRef.current;
+    if (!row) return;
+    setStat("写入中…");
+    const base = snapRef.current;
+    const rev = ++revRef.current;
+    sentRef.current = { rev, md: draftRef.current };
+    try {
+      await api.stageReview(row.kind, row.id, {
+        md: draftRef.current,
+        fileName: base?.fileName,
+        expectedFileName: base?.fileName,
+        expectedVersion: base?.version,
+        editRevision: rev
+      });
+      const r = await api.flushReviews();
+      if (r && !r.ok) {
+        setStat(r.msg || "保存失败");
+        if (r.recoveryPath) say("保存失败，恢复文件：" + r.recoveryPath);
+        return;
+      }
+      if (r && r.version) {
+        setSnap({
+          md: draftRef.current,
+          raw: "",
+          version: r.version,
+          fileName: r.fileName || base?.fileName || fileNameOf(row),
+          frontmatter: base?.frontmatter || []
+        });
+        setStat("已保存");
+      } else {
+        setStat("已提交写入…");
+      }
       onChanged();
       onRefreshDir?.();
-      say("已保存并写入 md");
+      say("已保存并写入 Markdown");
+    } catch {
+      setStat("保存失败");
+    }
+  };
+
+  const openFrontmatter = async () => {
+    const row = curRef.current;
+    if (!row || fmBusy || fmEdit) return;
+    const key = keyOf(row);
+    const still = () => activeKeyRef.current === key && !!curRef.current && keyOf(curRef.current) === key;
+    setFmBusy(true);
+    try {
+      const flushed = await flushNow();
+      if (!still()) return;
+      if (!flushed?.ok) {
+        sayRef.current("正文还没保存，请先保存再编辑标签");
+        return;
+      }
+      const c = await api.readReview(row.kind, row.id);
+      if (!still()) return;
+      if (!c) {
+        setStat("读取失败");
+        return;
+      }
+      setEditing(false);
+      setSnap({ md: c.md, raw: c.raw, version: c.version, fileName: c.fileName, frontmatter: c.frontmatter });
+      setFmEdit({
+        key,
+        frontmatter: c.frontmatter || [],
+        expectedFileName: c.fileName,
+        expectedVersion: c.version
+      });
+    } catch {
+      if (still()) setStat("读取失败");
+    } finally {
+      if (still()) setFmBusy(false);
     }
   };
 
@@ -202,7 +460,7 @@ export default function ReviewLib({
     /* 未匹配那份在另一张表里，kind 必须一起给，不然会删到同 id 的另一篇书评 */
     const res = await api.deleteReview(r.kind, r.id);
     if (res.ok) {
-      if (keyOf(r) === selKey) setSelKey(null);
+      if (keyOf(r) === selKey) selectKey(null);
       onChanged();
       onRefreshDir?.();
       say("已删除");
@@ -214,7 +472,7 @@ export default function ReviewLib({
     const r = pick.kind === "orphan" ? await api.associateOrphan(pick.id, bookId) : await api.moveReview(pick.kind, pick.id, bookId);
     if (r.ok) {
       setPick(null);
-      setSelKey("book:" + (r.id || ""));
+      selectKey("book:" + (r.id || ""));
       onChanged();
       onRefreshDir?.();
       say(pick.kind === "orphan" ? "已关联到书籍" : "已绑定到该书");
@@ -229,7 +487,7 @@ export default function ReviewLib({
     if (r.ok) {
       setPickSer(null);
       /* 未匹配那条搬过去会新建一行，选中要跟着新 id 走 */
-      setSelKey("series:" + (r.id || pickSer.id));
+      selectKey("series:" + (r.id || pickSer.id));
       onChanged();
       onRefreshDir?.();
       say("已挂成系列总评");
@@ -252,6 +510,10 @@ export default function ReviewLib({
   };
 
   const runIo = async (kind: "importFiles" | "importFolder" | "export" | "sync") => {
+    if (kind === "sync" && dirBad) {
+      say("书评目录不可用，请先检查书评文件夹");
+      return;
+    }
     setBusy(kind === "sync" ? "同步中…" : "处理中…");
     try {
       const r =
@@ -276,6 +538,10 @@ export default function ReviewLib({
 
   /* 刷新：重新扫一遍目录再拉清单。外面改过 md、或者监听慢了半拍，点一下就对齐 */
   const doRefresh = async () => {
+    if (dirBad) {
+      say("书评目录不可用，请先检查书评文件夹");
+      return;
+    }
     setBusy("刷新中…");
     try {
       const r = await api.syncReviewDir();
@@ -292,7 +558,7 @@ export default function ReviewLib({
   };
 
   /* 重命名：已挂到书或系列的那些一律改回「作者-《书名》书评.md」这种规范名 */
-  const doRename = async () => {
+  const doRenameAll = async () => {
     setBusy("重命名中…");
     try {
       const r = await api.renameReviewFiles();
@@ -303,6 +569,51 @@ export default function ReviewLib({
       const n = r.renamed || 0;
       say(n ? "重命名：" + n + " 份 md 已改成规范名" : "重命名：文件名都已经规范");
       onRefreshDir?.();
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const openRename = () => {
+    if (!cur) return;
+    setRenameAsk({ row: cur, key: keyOf(cur), value: fileNameOf(cur) });
+  };
+
+  const doRename = async () => {
+    const ask = renameAsk;
+    if (!ask) return;
+    const name = ask.value.trim();
+    if (!name || name === fileNameOf(ask.row)) {
+      setRenameAsk(null);
+      return;
+    }
+    setBusy("改名中…");
+    try {
+      if (editingRef.current && draftRef.current !== (snapRef.current?.md ?? "")) {
+        const fr = await flushNow();
+        if (!fr || !fr.ok) {
+          say("正文还没保存成功，先别改名");
+          return;
+        }
+      }
+      const base = snapRef.current;
+      const r = await api.updateReview(ask.row.kind, ask.row.id, {
+        fileName: name,
+        expectedFileName: base?.fileName || fileNameOf(ask.row),
+        expectedVersion: base?.version
+      });
+      if (r.ok) {
+        if (ask.key === activeKeyRef.current) {
+          setSnap((s) => (s ? { ...s, fileName: r.fileName || name, version: r.version || s.version } : s));
+          setStat("已保存");
+        }
+        onChanged();
+        onRefreshDir?.();
+        say("已改名为 " + (r.fileName || name));
+        setRenameAsk(null);
+      } else {
+        say((r.msg || "改名失败") + (r.recoveryPath ? "；恢复文件：" + r.recoveryPath : ""));
+      }
     } finally {
       setBusy("");
     }
@@ -367,11 +678,13 @@ export default function ReviewLib({
     { key: "fillFront", label: "补齐书评标签…" },
     { key: "stripFront", label: "撤销标签" },
     { key: "s3", label: "", sep: true },
+    { key: "rebuild", label: "重建书评索引" },
     { key: "diag", label: "存储自检" }
   ];
 
   const pickMenu = async (k: string) => {
     if (k === "importFiles" || k === "importFolder" || k === "export") return runIo(k);
+    if (k === "rebuild") return doRefresh();
     if (k === "fillFront") return doFillFront();
     if (k === "stripFront") {
       setStripAsk(true);
@@ -387,7 +700,7 @@ export default function ReviewLib({
   const openCtx = (e: React.MouseEvent, r: ReviewRow) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelKey(keyOf(r));
+    selectKey(keyOf(r));
     /* 正在编辑当前这篇时，右键顺带给排版命令，省得回顶部工具栏 */
     const fmt: CtxItem[] =
       editing && keyOf(r) === curKey
@@ -451,13 +764,21 @@ export default function ReviewLib({
     if (k === "assocSer") setPickSer(r);
     if (k === "export") exportMd(r);
     if (k === "copy") {
-      copyText(r.md || "");
-      say("已复制全文");
+      void (async () => {
+        const t =
+          keyOf(r) === curKey
+            ? editing
+              ? draftRef.current
+              : snapRef.current?.md || ""
+            : (await api.readReview(r.kind, r.id).catch(() => null))?.md || "";
+        copyText(t);
+        say("已复制正文");
+      })();
     }
     if (k === "del") setDel(r);
   };
 
-  const words = (editing ? draft : cur?.md || "").length;
+  const words = (editing ? draft : snap?.md || "").length;
 
   return (
     <div className="rvlib">
@@ -502,7 +823,7 @@ export default function ReviewLib({
           </button>
           <button
             className="mini"
-            onClick={doRename}
+            onClick={doRenameAll}
             disabled={!!busy}
             title="把已经挂到书或系列的 md 改回规范名：作者-《书名》书评.md"
           >
@@ -517,17 +838,17 @@ export default function ReviewLib({
             <div
               key={keyOf(r)}
               className={"rvi" + (cur && curKey === keyOf(r) ? " on" : "")}
-              onClick={() => setSelKey(keyOf(r))}
+              onClick={() => selectKey(keyOf(r))}
               onContextMenu={(e) => openCtx(e, r)}
             >
               <span className="rvi-g">{GRADE_ICON[r.grade || "normal"] || "🤍"}</span>
               <div className="rvi-b">
                 <div className="rvi-t">
-                  {r.title || "(未命名)"}
+                  {fileNameOf(r)}
                   {KIND_TAG[r.kind] ? <span className="rvi-badge">{KIND_TAG[r.kind]}</span> : null}
                 </div>
                 <div className="rvi-m">
-                  {(r.md || "").length} 字 · {(r.happenedAt || "").slice(0, 10)}
+                  {r.length ?? 0} 字 · {(r.happenedAt || "").slice(0, 10)}
                 </div>
               </div>
             </div>
@@ -537,11 +858,13 @@ export default function ReviewLib({
       </aside>
 
       <section className="rvm">
-        {cur ? (
+        {dirBad ? (
+          <div className="empty">书评文件夹不可用：{dirInfo?.dir || "未设置"}。请检查目录后点「重建书评索引」。</div>
+        ) : cur ? (
           <>
             <div className="rvm-h">
               <span className="rvm-g">{GRADE_ICON[cur.grade || "normal"] || "🤍"}</span>
-              <h2>{cur.kind === "series" ? bracket(cur.seriesLabel || cur.title) + "系列书评" : cur.title || "(未命名)"}</h2>
+              <h2 title={cur.title}>{fileNameOf(cur)}</h2>
               <div className="rvm-gs">
                 {["god", "normal", "bad"].map((g) => (
                   <button
@@ -567,6 +890,9 @@ export default function ReviewLib({
               <button className="mini" onClick={() => exportMd(cur)}>
                 导出
               </button>
+              <button className="mini" onClick={openRename} disabled={!!busy}>
+                改名
+              </button>
               {editing ? (
                 <button className="mini" onClick={saveNow} title="立刻保存，并把这篇写成书评文件夹里的 md">
                   保存
@@ -574,36 +900,86 @@ export default function ReviewLib({
               ) : null}
               <button
                 className="mini"
+                disabled={!!fmEdit || fmBusy}
                 onClick={() => {
-                  setEditing(!editing);
-                  if (!editing) setTimeout(() => richRef.current?.focus(), 60);
+                  if (editing) setEditing(false);
+                  else startEdit();
                 }}
               >
                 {editing ? "预览" : "编辑"}
               </button>
             </div>
 
+            {renameAsk && renameAsk.key === curKey ? (
+              <div className="rvm-rename">
+                <label>
+                  实际文件名
+                  <input
+                    autoFocus
+                    value={renameAsk.value}
+                    onChange={(e) => setRenameAsk({ ...renameAsk, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setRenameAsk(null);
+                      else if (e.key === "Enter") {
+                        e.preventDefault();
+                        void doRename();
+                      }
+                    }}
+                  />
+                </label>
+                <button className="mini" onClick={doRename} disabled={!!busy}>
+                  确认
+                </button>
+                <button className="mini" onClick={() => setRenameAsk(null)}>
+                  取消
+                </button>
+              </div>
+            ) : null}
+
+            <ReviewFrontmatter
+              key={curKey}
+              kind={cur.kind}
+              id={cur.id}
+              frontmatter={snap?.frontmatter || []}
+              baseline={fmEdit && fmEdit.key === curKey ? fmEdit : null}
+              disabled={fmBusy}
+              busy={fmBusy}
+              onRequestEdit={openFrontmatter}
+              onCancelEdit={() => setFmEdit(null)}
+              onSaved={(r) => {
+                if (activeKeyRef.current !== curKey) return;
+                setFmEdit(null);
+                const nextKey = r.kind != null && r.id != null ? r.kind + ":" + r.id : curKey;
+                if (nextKey !== curKey) selectKey(nextKey);
+                else if (curRef.current) void loadRow(curRef.current, curKey, false);
+                onChanged();
+                onRefreshDir?.();
+                say("标签已保存");
+              }}
+            />
+
             {editing ? (
               <div className="rvm-edit">
-                <RichEditor key={curKey} ref={richRef} md={cur.md || ""} onChange={setDraft} />
+                <RichEditor key={curKey + ":" + editorEpoch} ref={richRef} md={draft} onChange={onDraft} />
                 <div className="rvm-stat">
-                  {words} 字 · {stat || "停手 0.7 秒自动保存"}
+                  {words} 字 · {stat || (dirBad ? "书评目录不可用" : "输入后 2 秒内自动落盘")}
                   {dirInfo?.dir ? " · 同步目录已接" : ""}
-                  {cur.kind === "book" || cur.kind === "series" ? " · 开头的时间、评分、分类由库里写" : ""}
                 </div>
               </div>
             ) : (
               <div className="rvm-body">
-                {cur.md && cur.md.trim() ? (
-                  <div className="md" dangerouslySetInnerHTML={{ __html: mdToHtml(cur.md) }} />
+                {snap?.md && snap.md.trim() ? (
+                  <div className="md" dangerouslySetInnerHTML={{ __html: mdToHtml(snap.md) }} />
                 ) : (
-                  <div className="empty">这篇没有正文，点「编辑」开始写</div>
+                  <div className="empty">
+                    {loading ? "读取中…" : dirBad ? "书评目录不可用，读不到正文" : "这篇没有正文，点「编辑」开始写"}
+                  </div>
                 )}
               </div>
             )}
           </>
         ) : (
-          <div className="empty">{busy || "左边挑一篇书评"}</div>
+          <div className="empty">{busy || (loading ? "读取中…" : "左边挑一篇书评")}</div>
         )}
       </section>
 

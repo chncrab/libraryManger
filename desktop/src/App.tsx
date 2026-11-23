@@ -432,9 +432,9 @@ export default function App() {
     { key: "revealLib", label: "打开书库文件夹" },
     { key: "revealRv", label: "打开书评文件夹" },
     { key: "s0", label: "", sep: true },
-    { key: "backup", label: "备份数据库…" },
+    { key: "backup", label: "备份索引数据库…" },
     { key: "backupDir", label: "打开备份目录" },
-    { key: "restore", label: "从备份恢复…" },
+    { key: "restore", label: "从索引备份恢复…" },
     { key: "copyLib", label: "把整个书库另存一份…" },
     { key: "s1", label: "", sep: true },
     { key: "covers", label: "批量找封面…" },
@@ -485,7 +485,7 @@ export default function App() {
           "书库文件夹在 " +
           (dinfo?.dir || info?.libraryRoot || "") +
           "，书、封面、书评都在里面，安装包里不含任何书目。换机器整个拷走就行。\n" +
-          "书评正文同时存在库里和 reviews 文件夹的 md 里，两边改哪边都行，改完几秒内自动对齐。",
+          "书评正文只存在 reviews 文件夹的 Markdown 文件里，数据库只保留索引和元数据。改完 md 点「重建书评索引」或等外部监听同步。",
         onOk: () => {}
       });
     }

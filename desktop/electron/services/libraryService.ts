@@ -41,9 +41,9 @@ export function pathsOf(root: string): LibraryPaths {
 }
 
 /** 目录建齐。重复调用没有副作用，打开旧库时也走一遍，缺什么补什么 */
-export function ensureStructure(root: string): LibraryPaths {
+export function ensureStructure(root: string, createReviewDir = true): LibraryPaths {
   const p = pathsOf(root);
-  for (const d of [p.root, p.coverDir, p.reviewDir, p.backupDir]) {
+  for (const d of [p.root, p.coverDir, ...(createReviewDir ? [p.reviewDir] : []), p.backupDir]) {
     fs.mkdirSync(d, { recursive: true });
   }
   if (!fs.existsSync(p.markFile)) {

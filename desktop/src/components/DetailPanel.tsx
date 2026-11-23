@@ -25,10 +25,13 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
   const [data, setData] = useState<Loaded | null>(null);
   /* 大图开着的时候，Esc 先收大图，别把整个抽屉一起收掉 */
   const [coverOpen, setCoverOpen] = useState(false);
+  const [revTick, setRevTick] = useState(0);
 
   useEffect(() => {
     setCoverOpen(false);
   }, [id]);
+
+  useEffect(() => api.onReviewsChanged(() => setRevTick((t) => t + 1)), []);
 
   useEffect(() => {
     if (!id) return;
@@ -39,7 +42,7 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, revTick]);
 
   useEffect(() => {
     if (!id) return;

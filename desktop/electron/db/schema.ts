@@ -336,6 +336,11 @@ INSERT OR IGNORE INTO fields (key, label, type, builtin, col, patch_key, width, 
 VALUES ('readStart', '阅读开始时间', 'date', 1, 'read_start', 'readStart', 100, 13, 1, 0, 0);
 `;
 
+const V11 = `
+ALTER TABLE reviews ADD COLUMN file_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE orphan_reviews ADD COLUMN file_hash TEXT NOT NULL DEFAULT '';
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "init", sql: V1 },
   { version: 2, name: "category_parent", sql: V2 },
@@ -347,5 +352,6 @@ export const MIGRATIONS: Migration[] = [
   /* 系列名有了译名，全文索引的 series 列要同时装两个名字，整库重灌一次 */
   { version: 8, name: "series_zh_name", sql: V8, after: (db) => rebuildAllFts(db) },
   { version: 9, name: "drop_cover_history", sql: V9 },
-  { version: 10, name: "read_start", sql: V10 }
+  { version: 10, name: "read_start", sql: V10 },
+  { version: 11, name: "review_file_hash", sql: V11 }
 ];

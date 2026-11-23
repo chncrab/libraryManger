@@ -38,11 +38,16 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
   const saved = useRef<Range | null>(null);
   /* 初值只算一次，父组件重渲染时不能把 innerHTML 重新灌进去 */
   const boot = useMemo(() => mdToHtml(md), []);
+  const dirty = useRef(false);
+  const last = useRef(md);
 
   const emit = () => {
     const el = box.current;
     if (!el) return;
-    onChange(htmlToMd(el.innerHTML));
+    const next = htmlToMd(el.innerHTML);
+    if (next === last.current) return;
+    last.current = next;
+    onChange(next);
   };
 
   /* contenteditable 失焦后选区会丢，点工具栏或右键菜单前得先记住它 */
@@ -72,6 +77,7 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
     }
     document.execCommand(cmd, false, arg);
     if (s && s.rangeCount) saved.current = s.getRangeAt(0).cloneRange();
+    dirty.current = true;
     emit();
   };
 
@@ -106,8 +112,15 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
         contentEditable
         suppressContentEditableWarning
         spellCheck={false}
-        onInput={emit}
-        onBlur={emit}
+        onInput={() => {
+          dirty.current = true;
+          emit();
+        }}
+        onBlur={() => {
+          if (!dirty.current) return;
+          dirty.current = false;
+          emit();
+        }}
         dangerouslySetInnerHTML={{ __html: boot }}
       />
     </div>

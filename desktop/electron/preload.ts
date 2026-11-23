@@ -27,6 +27,15 @@ const api: BooklibApi = {
     ipcRenderer.on("library:reviews-changed", fn);
     return () => ipcRenderer.removeListener("library:reviews-changed", fn);
   },
+  readReview: (kind: string, id: number) => ipcRenderer.invoke("reviews:read", kind, id),
+  searchReviewText: (q: string) => ipcRenderer.invoke("reviews:search", q),
+  stageReview: (kind: string, id: number, p: ReviewPatch) => ipcRenderer.invoke("reviews:stage", kind, id, p),
+  flushReviews: () => ipcRenderer.invoke("reviews:flush"),
+  onReviewSaveState: (cb: (kind: string, id: number, result: any) => void) => {
+    const fn = (_e: unknown, kind: string, id: number, result: any) => cb(kind, id, result);
+    ipcRenderer.on("reviews:saveState", fn);
+    return () => ipcRenderer.removeListener("reviews:saveState", fn);
+  },
 
   listBooks: (q: BookQuery) => ipcRenderer.invoke("books:list", q),
   getBook: (id: string) => ipcRenderer.invoke("books:get", id),

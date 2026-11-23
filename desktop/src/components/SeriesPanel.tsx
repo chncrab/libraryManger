@@ -22,6 +22,9 @@ export default function SeriesPanel({ series, onClose, onOpenBook, onWriteReview
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [revTick, setRevTick] = useState(0);
+
+  useEffect(() => api.onReviewsChanged(() => setRevTick((t) => t + 1)), []);
 
   useEffect(() => {
     let alive = true;
@@ -30,7 +33,7 @@ export default function SeriesPanel({ series, onClose, onOpenBook, onWriteReview
     return () => {
       alive = false;
     };
-  }, [series.id]);
+  }, [series.id, revTick]);
 
   /* 编辑态里按 Esc 先退出编辑，再按一次才关面板。
      注册在捕获阶段：外面那层 App 的 Esc 监听在冒泡阶段，会直接把面板收掉 */
