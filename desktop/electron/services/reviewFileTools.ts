@@ -12,9 +12,10 @@ import {
   splitReviewFile,
   splitLegacyReviewLabel
 } from "./reviewFiles";
-import { listReviews } from "./reviewService";
+import { listReviews, seriesReviewStem } from "./reviewService";
 import { refreshLinkedReviewFront } from "./reviewFileEdits";
-import { seriesAuthor, seriesTitle } from "./seriesService";
+import { seriesAuthor, seriesLabel } from "./seriesService";
+import { patchReviewFrontmatter } from "./reviewFrontmatter";
 
 /* ------------------------------------------------------------------ */
 /* 公共小工具                                                          */
@@ -207,6 +208,13 @@ function bookFileName(db: DB, bookId: string): string {
   return joinName(String(r.author || ""), String(r.title || ""));
 }
 
+/** 系列总评的显示名：有译名就用完整译名，没译名才退回原名并去掉尾部的分类词 */
+function seriesLabelOf(db: DB, seriesId: number): string {
+  const row = db.prepare("SELECT name, zh_name FROM series WHERE id = ?").get(seriesId) as any;
+  if (!row) return "";
+  return String(row.zh_name || "").trim() || seriesLabel(String(row.name || ""));
+}
+
 /** 一个系列/一本书的规范名，只看库里实际的名字 */
 function targetName(db: DB, kind: string, id: number, bookId?: string | null, seriesId?: number | null): string {
   const k = String(kind || "");
@@ -225,11 +233,36 @@ function targetName(db: DB, kind: string, id: number, bookId?: string | null, se
       sid = r ? Number(r.s) || 0 : 0;
     }
     if (!sid) return "";
-    const row = db.prepare("SELECT name FROM series WHERE id = ?").get(sid) as any;
-    const title = row ? String(row.name || "") : "";
-    return joinName(seriesAuthor(db, sid) || "", seriesTitle(title));
+    const label = seriesLabelOf(db, sid);
+    if (!label) return "";
+    return seriesReviewStem(seriesAuthor(db, sid), label);
   }
   return "";
+}
+
+/** 改名以后，库里的索引与旧「review_files」映射都还指着旧名字，先一起挪过去，再交给对账 */
+function remapOldName(db: DB, from: string, to: string): void {
+  if (!from || !to || from === to) return;
+  try {
+    db.prepare("UPDATE reviews SET file_name = ? WHERE file_name = ? AND deleted_at IS NULL").run(to, from);
+  } catch {
+    /* 索引挪不动时交给 reconcile 自己重新认 */
+  }
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get("review_files") as any;
+    if (!row?.value) return;
+    const map = JSON.parse(String(row.value));
+    let changed = false;
+    for (const key of Object.keys(map)) {
+      if (map[key] === from) {
+        map[key] = to;
+        changed = true;
+      }
+    }
+    if (changed) db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(map), "review_files");
+  } catch {
+    /* 旧映射坏了不影响主流程 */
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -413,7 +446,7 @@ export function bulkEditReviewFiles(
   db: DB,
   dir: string,
   backupDir: string,
-  mode: "rename" | "fill" | "strip"
+  mode: "rename" | "fill" | "strip" | "renameSeries"
 ): ReviewIoSummary {
   const root = path.resolve(dir);
   const out = emptySummary(root);
@@ -450,7 +483,7 @@ export function bulkEditReviewFiles(
     return out;
   }
 
-  reconcileReviewFiles(db, root);
+  reconcileReviewFiles(db, root, mode !== "renameSeries");
 
   let rows: any[] = [];
   try {
@@ -483,7 +516,21 @@ export function bulkEditReviewFiles(
     }
 
     try {
-      if (mode === "rename") {
+      if (mode === "rename" || mode === "renameSeries") {
+        if (mode === "renameSeries") {
+          if (kind !== "series") {
+            out.skipped++;
+            continue;
+          }
+          const sid = Number(r?.seriesId) || 0;
+          const srow = sid
+            ? (db.prepare("SELECT zh_name FROM series WHERE id = ?").get(sid) as any)
+            : null;
+          if (!String(srow?.zh_name || "").trim()) {
+            out.skipped++;
+            continue;
+          }
+        }
         const want = targetName(db, kind, id, r?.bookId, r?.seriesId);
         if (!want) {
           out.skipped++;
@@ -491,11 +538,58 @@ export function bulkEditReviewFiles(
           continue;
         }
         const wantFile = want + ".md";
-        if (wantFile === fileName) {
+        const renaming = wantFile !== fileName;
+        if (renaming && fs.existsSync(path.join(root, wantFile))) {
           out.skipped++;
+          out.msgs.push("目标文件名已存在，未覆盖：" + wantFile);
           continue;
         }
-        renameReviewFileNoReplace(root, fileName, wantFile);
+
+        /* 首部里的「系列」也要跟着显示名走，文件名没变时同样要改 */
+        let changedFront: { before: Buffer; after: Buffer } | undefined;
+        if (kind === "series") {
+          const sid = Number(r?.seriesId) || 0;
+          const label = sid ? seriesLabelOf(db, sid) : "";
+          if (label) {
+            const raw = readRaw(file);
+            const next = patchReviewFrontmatter(raw.text, [{ key: "系列", value: label }]);
+            const match = matchReviewFile(db, wantFile, splitReviewFile(next).fields);
+            if (match.kind !== "series" || match.seriesId !== sid) {
+              out.skipped++;
+              out.msgs.push("新文件名和标签无法唯一匹配系列，已跳过：" + fileName);
+              continue;
+            }
+            if (next !== raw.text) {
+              const bytes = Buffer.concat([raw.bom ? BOM : Buffer.alloc(0), Buffer.from(next, "utf8")]);
+              if (!atomicSwap(file, bytes, raw.raw)) {
+                out.skipped++;
+                out.msgs.push("文件在写入前被改动，已跳过：" + fileName);
+                continue;
+              }
+              changedFront = { before: raw.raw, after: bytes };
+            }
+          }
+        }
+
+        if (!renaming) {
+          if (changedFront) {
+            out.filled = (out.filled || 0) + 1;
+            out.written++;
+          } else {
+            out.skipped++;
+          }
+          continue;
+        }
+
+        try {
+          renameReviewFileNoReplace(root, fileName, wantFile);
+        } catch (error) {
+          if (changedFront && !atomicSwap(file, changedFront.before, changedFront.after)) {
+            out.msgs.push("未能还原标签，原始文件可从本次备份恢复：" + fileName);
+          }
+          throw error;
+        }
+        remapOldName(db, fileName, wantFile);
         out.renamed = (out.renamed || 0) + 1;
         out.written++;
         continue;
@@ -586,6 +680,6 @@ export function bulkEditReviewFiles(
     }
   }
 
-  reconcileReviewFiles(db, root);
+  reconcileReviewFiles(db, root, mode !== "renameSeries");
   return out;
 }

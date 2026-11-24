@@ -80,14 +80,14 @@ function gradeOf(fields: any): string {
     const g = level.toLowerCase();
     if (g === "神作" || g === "god") return "god";
     if (g === "普通" || g === "normal") return "normal";
-    if (g === "扫雷" || g === "bad") return "bad";
+    if (g === "扫雷" || g === "bad" || g === "mine" || g === "bomb") return "bad";
   }
   const score = field(fields, ["评分"]);
   if (score) {
     const g = score.toLowerCase();
     if (g === "god") return "god";
     if (g === "normal") return "normal";
-    if (g === "bad") return "bad";
+    if (g === "bad" || g === "mine" || g === "bomb") return "bad";
   }
   return "normal";
 }

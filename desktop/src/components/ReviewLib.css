@@ -1,0 +1,159 @@
+/* 书评库局部样式：列表截断、左右分栏拖手、编辑区三种视图 */
+
+/* 左栏和正文之间的竖向拖手 */
+.rvlib-resizer {
+  flex: none;
+  width: 7px;
+  margin: 0 -3px 0 -4px;
+  position: relative;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+.rvlib-dragging { user-select: none; }
+.rvlib .rvs { max-width: calc(100% - 300px); }
+.rvlib-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--line);
+}
+.rvlib-resizer:hover::after,
+.rvlib-resizer.on::after {
+  left: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--acc);
+}
+
+/* 长文件名截断成一行；系列徽标能整枚放下才出现，否则整枚换到被裁掉的第二行 */
+.rvlib .rvi-b {
+  overflow: hidden;
+}
+.rvlib .rvi-t {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  height: 18px;
+  max-height: 18px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.rvlib .rvi-name {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rvlib .rvi-badge {
+  flex: 0 0 auto;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* 编辑区容器 */
+.rvlib .rvm,
+.rvm-edit {
+  min-height: 0;
+  overflow: hidden;
+}
+.rvm-edit .rv-views {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rvm-edit .rvm-body,
+.rvm-edit .rve {
+  min-height: 0;
+  max-width: none;
+  width: 100%;
+}
+/* 源代码：左 Markdown，右实时排版 */
+.rv-src {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+}
+.rv-src-ta {
+  flex: 1 1 50%;
+  width: 50%;
+  min-width: 0;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  border-right: 1px solid var(--line);
+  outline: none;
+  padding: 15px 18px 60px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+  line-height: 1.75;
+  tab-size: 2;
+}
+.rv-src-ta::placeholder {
+  color: var(--fg3);
+}
+.rv-src-prev {
+  flex: 1 1 50%;
+  min-width: 0;
+  overflow: auto;
+  padding: 15px 20px 60px;
+  background: var(--bg2);
+}
+
+.rv-views .md,
+.rv-views .rv-src-ta {
+  font-size: calc(13px * var(--rv-zoom, 1));
+}
+.rv-views .md h1 {
+  font-size: calc(17px * var(--rv-zoom, 1));
+}
+.rv-views .md h2 {
+  font-size: calc(15px * var(--rv-zoom, 1));
+}
+.rv-views .md h3 {
+  font-size: calc(14px * var(--rv-zoom, 1));
+}
+.rv-views .md h4 {
+  font-size: calc(13px * var(--rv-zoom, 1));
+}
+.rv-views .md code { font-size: calc(11.5px * var(--rv-zoom, 1)); }
+.rv-views .md table { font-size: calc(12.5px * var(--rv-zoom, 1)); }
+
+/* 底部视图切换 */
+.rvm-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+}
+.rvm-foot .rvm-stat {
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rvm-foot .mini.on {
+  background: var(--bg4);
+  border-color: var(--acc);
+  color: var(--acc2);
+}

@@ -1,5 +1,7 @@
 /** 主进程与渲染进程共用的类型。改这里两边同时生效。 */
 
+import type { BookSearchField } from "./bookSearch";
+
 export type MediaType = "小说" | "漫画";
 
 /* 排序键不再写死，自定义字段建出来就能拿来排 */
@@ -440,7 +442,10 @@ export interface ReviewRow {
   bookId: string | null;
   seriesId: number | null;
   title: string;
+  /** 书评文件中的手动评级 */
   grade: string;
+  /** 关联单册的评分或系列均分 */
+  rating?: number | null;
   md: string;
   fileName: string;
   happenedAt: string;
@@ -690,14 +695,15 @@ export interface BooklibApi {
   readReview(kind: string, id: number): Promise<ReviewFileContent | null>;
   /** 在 reviews 文件正文里搜索，返回 kind:id[] */
   searchReviewText(q: string): Promise<string[]>;
-  /** 暂存一次编辑，主进程 2 秒防抖后写盘 */
-  stageReview(kind: string, id: number, p: ReviewPatch): Promise<RvResult>;
+  /** 暂存正文，默认防抖 2 秒，也可立即写盘并返回结果 */
+  stageReview(kind: string, id: number, p: ReviewPatch, immediate?: boolean): Promise<RvResult>;
   /** 立即把所有暂存写盘 */
   flushReviews(): Promise<RvResult>;
   /** 主进程完成写盘或冲突时的通知 */
   onReviewSaveState(cb: (kind: string, id: number, result: RvResult) => void): () => void;
 
   listBooks(q: BookQuery): Promise<ListResult>;
+  suggestBookField(q: BookQuery, field: BookSearchField, prefix: string, seriesMode: boolean): Promise<string[]>;
   getBook(id: string): Promise<{ book: BookRow; review: { md: string; grade: string; happenedAt: string } | null } | null>;
   facets(media?: string): Promise<Facets>;
   seriesAvg(id: number): Promise<SeriesAvg>;

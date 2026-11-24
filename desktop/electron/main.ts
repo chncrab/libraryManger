@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { openDb, closeDb } from "./db";
 import type { DB } from "./db";
-import { listBooks, getBook, facets, seriesAvg } from "./services/bookService";
+import { listBooks, getBook, facets, seriesAvg, suggestBookField } from "./services/bookService";
 import { updateBook, deleteBook, restoreBook, copyBook, copyBooks, setRead, setRating } from "./services/editService";
 import { categoryTree, createCategory, renameCategory, setCategoryParent, removeCategory, moveCategory } from "./services/categoryService";
 import { listReviews, counts } from "./services/reviewService";
@@ -875,6 +875,9 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("books:list", (_e, q: BookQuery) => listBooks(D(), q || {}));
+  ipcMain.handle("books:fieldSuggestions", (_e, q: BookQuery, field: string, prefix: string, seriesMode: boolean) =>
+    suggestBookField(D(), q || {}, field, prefix, seriesMode === true)
+  );
   ipcMain.handle("books:get", (_e, id: string) => {
     const book = getBook(D(), id);
     if (!book) return null;
@@ -1167,8 +1170,8 @@ function registerIpc(): void {
     }
     return out;
   });
-  ipcMain.handle("reviews:stage", (_e, kind: string, id: number, p: ReviewPatch) => {
-    return reviewRuntime.stage(kind as any, id, p || {});
+  ipcMain.handle("reviews:stage", (_e, kind: string, id: number, p: ReviewPatch, immediate?: boolean) => {
+    return reviewRuntime.stage(kind, id, p || {}, immediate === true);
   });
   ipcMain.handle("reviews:flush", () => {
     return reviewRuntime.flushAll();
@@ -1362,10 +1365,12 @@ function registerIpc(): void {
       return null;
     }
   });
-  /* 把已经挂上书或系列的书评 md 改回规范名。只动名字，正文与关联都不动 */
+  /* 按书目和系列重命名 Markdown，系列标签同步使用书库显示名。 */
   ipcMain.handle("reviews:rename", () => {
     if (!db || !lib) return null;
     try {
+      const flushed = reviewRuntime.flushAll();
+      if (!flushed.ok || flushed.recoveryPath) return null;
       const r = bulkEditReviewFiles(D(), reviewDir(), lib.backupDir, "rename");
       if (r) announceReviewsChanged();
       return r;

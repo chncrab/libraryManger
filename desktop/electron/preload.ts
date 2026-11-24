@@ -32,7 +32,8 @@ const api: BooklibApi = {
   },
   readReview: (kind: string, id: number) => ipcRenderer.invoke("reviews:read", kind, id),
   searchReviewText: (q: string) => ipcRenderer.invoke("reviews:search", q),
-  stageReview: (kind: string, id: number, p: ReviewPatch) => ipcRenderer.invoke("reviews:stage", kind, id, p),
+  stageReview: (kind: string, id: number, p: ReviewPatch, immediate?: boolean) =>
+    ipcRenderer.invoke("reviews:stage", kind, id, p, immediate),
   flushReviews: () => ipcRenderer.invoke("reviews:flush"),
   onReviewSaveState: (cb: (kind: string, id: number, result: any) => void) => {
     const fn = (_e: unknown, kind: string, id: number, result: any) => cb(kind, id, result);
@@ -41,6 +42,7 @@ const api: BooklibApi = {
   },
 
   listBooks: (q: BookQuery) => ipcRenderer.invoke("books:list", q),
+  suggestBookField: (q, field, prefix, seriesMode) => ipcRenderer.invoke("books:fieldSuggestions", q, field, prefix, seriesMode),
   getBook: (id: string) => ipcRenderer.invoke("books:get", id),
   facets: (media?: string) => ipcRenderer.invoke("books:facets", media),
   seriesAvg: (id: number) => ipcRenderer.invoke("series:avg", id),

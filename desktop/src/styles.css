@@ -66,6 +66,35 @@ button {
   outline: none;
 }
 .search:focus { border-color: var(--acc); }
+.book-search-box { position: relative; flex: 0 1 300px; min-width: 130px; }
+.book-search-box .search { width: 100%; display: block; }
+.book-search-options {
+  position: absolute;
+  z-index: 25;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  padding: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 25%);
+}
+.book-search-options button {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.book-search-options button.on, .book-search-options button:hover { background: var(--bg4); }
 .seg { display: flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; flex: none; }
 .seg button {
   height: 26px;
@@ -416,25 +445,21 @@ button {
   border-bottom: 1px solid var(--line);
   background: var(--panel, transparent);
 }
-.rvm-fm-h { display: flex; align-items: center; gap: 8px; min-height: 22px; }
-.rvm-fm-t { font-size: 12px; color: var(--fg3); }
-.rvm-fm-note { font-size: 11px; color: var(--fg3); }
 .rvm-fm-list,
 .rvm-fm-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); max-width: 860px; }
-.rvm-fm-list { gap: 3px 14px; margin-top: 4px; }
+.rvm-fm-list { gap: 4px 14px; }
 .rvm-fm-wide,
 .rvm-fm-add { grid-column: 1 / -1; }
-.rvm-fm-item { display: flex; gap: 8px; font-size: 12px; line-height: 1.45; }
+.rvm-fm-item { display: flex; gap: 8px; font-size: 14px; line-height: 1.5; }
 .rvm-fm-k { color: var(--fg3); min-width: 64px; flex: none; }
 .rvm-fm-v { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-.rvm-fm-none { color: var(--fg3); font-size: 12px; }
-.rvm-fm-edit { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px 14px; margin-top: 6px; }
+.rvm-fm-edit { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px 14px; }
 .rvm-fm-row { display: flex; gap: 6px; align-items: flex-end; }
 .rvm-fm-row label {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--fg3);
   min-width: 0;
 }
@@ -445,7 +470,7 @@ button {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -455,7 +480,6 @@ button {
 .rvm-fm-row textarea { resize: vertical; min-height: 44px; white-space: pre; }
 .rvm-fm-del { flex: none; }
 .rvm-fm-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: var(--fg3); }
-.rvm-fm-err { color: var(--danger, #c33); font-size: 12px; margin: 4px 0; }
 .rvm-g { flex: none; font-size: 12px; }
 .rvm-gs { display: flex; gap: 3px; flex: none; }
 .gbtn {

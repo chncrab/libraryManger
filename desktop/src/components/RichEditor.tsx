@@ -12,6 +12,7 @@ interface Props {
   /** 只用来定初值，之后编辑区内的一切以 DOM 为准 */
   md: string;
   onChange: (md: string) => void;
+  readOnly?: boolean;
 }
 
 type Tool = { cmd: string; arg?: string; label: string; title: string; wide?: boolean };
@@ -33,7 +34,7 @@ const TOOLS: Tool[] = [
  * 所见即所得编辑区。DOM 里的 HTML 是唯一事实，输入时转成 markdown 往外抛，
  * 外部不再往回流，否则每次保存回来光标就被顶到开头。
  */
-const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onChange }, ref) {
+const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onChange, readOnly }, ref) {
   const box = useRef<HTMLDivElement | null>(null);
   const saved = useRef<Range | null>(null);
   /* 初值只算一次，父组件重渲染时不能把 innerHTML 重新灌进去 */
@@ -43,7 +44,7 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
 
   const emit = () => {
     const el = box.current;
-    if (!el) return;
+    if (!el || readOnly) return;
     const next = htmlToMd(el.innerHTML);
     if (next === last.current) return;
     last.current = next;
@@ -64,7 +65,7 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
 
   const run = (cmd: string, arg?: string) => {
     const el = box.current;
-    if (!el) return;
+    if (!el || readOnly) return;
     el.focus();
     const s = window.getSelection();
     if (s && saved.current) {
@@ -97,19 +98,20 @@ const RichEditor = forwardRef<RichHandle, Props>(function RichEditor({ md, onCha
             className={"rvt-b" + (t.wide ? " wide" : "")}
             title={t.title}
             onClick={() => run(t.cmd, t.arg)}
+            disabled={readOnly}
             type="button"
           >
             {t.label}
           </button>
         ))}
-        <button className="rvt-b wide" title="插入链接" onClick={link} type="button">
+        <button className="rvt-b wide" title="插入链接" onClick={link} type="button" disabled={readOnly}>
           链接
         </button>
       </div>
       <div
         ref={box}
         className="md rve"
-        contentEditable
+        contentEditable={!readOnly}
         suppressContentEditableWarning
         spellCheck={false}
         onInput={() => {

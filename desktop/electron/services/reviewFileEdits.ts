@@ -3,8 +3,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { DB } from "../db";
 import type { ReviewRow, ReviewInput, ReviewPatch, RvResult, ReviewFileContent } from "../../shared/types";
-import { listReviews, sanitizeFile } from "./reviewService";
-import { seriesAuthor } from "./seriesService";
+import { listReviews, sanitizeFile, seriesReviewStem } from "./reviewService";
+import { seriesAuthor, seriesLabel } from "./seriesService";
 import {
   splitReviewFile,
   readReviewFile,
@@ -218,9 +218,10 @@ function ownSeriesInfo(
   overrideName?: string
 ): { title: string; author: string } {
   const d = dbAny(db);
-  const s = d.prepare("SELECT name FROM series WHERE id=?").get(seriesId) as any;
+  const s = d.prepare("SELECT name, zh_name FROM series WHERE id=?").get(seriesId) as any;
   if (!s) return { title: "", author: "" };
-  const title = overrideName !== undefined ? overrideName : String(s.name || "");
+  const display = String(s.zh_name || "").trim() || seriesLabel(String(s.name || ""));
+  const title = overrideName !== undefined ? overrideName : display;
   return { title, author: seriesAuthor(db, seriesId) || "" };
 }
 
@@ -361,11 +362,10 @@ export function createFileReview(db: DB, dir: string, p: ReviewInput): RvResult 
   if (hasSeries) {
     kind = "series";
     seriesId = p.seriesId as number;
-    const s = d.prepare("SELECT id,name FROM series WHERE id=?").get(seriesId) as any;
-    if (!s) return { ok: false, msg: "系列不存在" };
-    title = String(s.name || "未命名");
     const info = ownSeriesInfo(db, seriesId);
-    if (info.title) fields["系列"] = info.title;
+    if (!info.title) return { ok: false, msg: "系列不存在" };
+    title = info.title;
+    fields["系列"] = title;
     if (info.author) fields["作者"] = info.author;
   } else if (hasBook) {
     kind = "book";
@@ -406,7 +406,10 @@ export function createFileReview(db: DB, dir: string, p: ReviewInput): RvResult 
 
   const raw = buildFront(fields) + "\n" + (p.md || "");
   const safeTitle = sanitizeFile(title) || "未命名";
-  const base = kind === "draft" ? `草稿-${safeTitle}` : safeTitle;
+  let base = kind === "draft" ? `草稿-${safeTitle}` : safeTitle;
+  if (kind === "series") {
+    base = seriesReviewStem(fields["作者"] || "", title);
+  }
 
   let created = "";
   for (let n = 0; n < 1000 && !created; n++) {
@@ -757,9 +760,9 @@ export function refreshLinkedReviewFront(
   let seriesCats: string[] = [];
 
   if (seriesId !== null) {
-    const s = d.prepare("SELECT id, name FROM series WHERE id=?").get(seriesId) as any;
+    const s = d.prepare("SELECT id, name, zh_name FROM series WHERE id=?").get(seriesId) as any;
     if (s) {
-      seriesName = String(s.name || "");
+      seriesName = String(s.zh_name || "").trim() || seriesLabel(String(s.name || ""));
       seriesAuthorValue = seriesAuthor(db, seriesId) || "";
       const last = d
         .prepare(

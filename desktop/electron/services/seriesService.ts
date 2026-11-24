@@ -1,27 +1,11 @@
 import type { DB } from "../db";
 import type { BookQuery, BookRow, SeriesInfo, SeriesPatch, SeriesQuery, SeriesResult } from "../../shared/types";
 import { rebuildFts } from "../db/fts";
-import { bookWhere, listBooks } from "./bookService";
+import { bookWhere, listBooks, seriesKeywordWhere } from "./bookService";
+import { parseBookSearch } from "../../shared/bookSearch";
 import { seriesDisplay, seriesLabel, seriesTitle } from "../../shared/seriesText";
 
 export { seriesLabel, seriesTitle };
-
-/**
- * 系列关键词：按原名与译名匹配，空格分出的每个词都要命中。
- * 显示名就是译名优先、没有才用原名，这两列 LIKE 一遍已经覆盖。
- */
-function seriesKeywordWhere(kw: string): { sql: string; params: any[] } | null {
-  const words = kw.split(/\s+/).filter(Boolean);
-  if (!words.length) return null;
-  const parts: string[] = [];
-  const params: any[] = [];
-  for (const w of words) {
-    parts.push("(s.name LIKE ? OR s.zh_name LIKE ?)");
-    const like = "%" + w + "%";
-    params.push(like, like);
-  }
-  return { sql: "(" + parts.join(" AND ") + ")", params };
-}
 
 /**
  * 系列集合一格格的数据。册数与均分只算在架书，均分只算读过且打过分的那几册。
@@ -38,7 +22,10 @@ export function listSeries(db: DB, arg: string | SeriesQuery = ""): SeriesInfo[]
   const params: any[] = [];
 
   for (const raw of [q.presetQ, q.q]) {
-    const hit = seriesKeywordWhere(String(raw || "").trim());
+    const text = String(raw || "");
+    const parsed = parseBookSearch(text);
+    /* 没有 @字段 时原样交给系列名匹配；有字段时只拿剩下的普通关键词 */
+    const hit = seriesKeywordWhere(parsed.hasFields ? parsed.keywords : text.trim());
     if (hit) {
       where.push(hit.sql);
       params.push(...hit.params);

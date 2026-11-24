@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "./api";
+import BookSearchInput from "./components/BookSearchInput";
 import Sidebar, { EMPTY_FILTER, type FilterState } from "./components/Sidebar";
 import GridView from "./components/GridView";
 import TableView from "./components/TableView";
@@ -948,14 +949,19 @@ export default function App() {
       />
       <header className="topbar">
         {page === "library" ? (
-          <input
+          <BookSearchInput
             key="book-search"
             ref={searchRef}
-            className="search"
-            aria-label={unit === "series" ? "搜索系列" : "搜索藏书"}
+            label={unit === "series" ? "搜索系列" : "搜索藏书"}
             value={temp.q}
-            onChange={(e) => setTemp({ q: e.target.value })}
-            placeholder={unit === "series" ? "搜系列名、原名（/ 聚焦）" : "搜书名、作者、原名（/ 聚焦）"}
+            onChange={(q) => setTemp({ q })}
+            suggest={(field, prefix, remaining) => api.suggestBookField(
+              { ...(unit === "series" ? buildSeriesQuery() : buildBookQuery(0, PAGE)), q: remaining },
+              field,
+              prefix,
+              unit === "series"
+            )}
+            placeholder={unit === "series" ? "搜系列名、原名（@ 选字段）" : "搜书名、作者、原名（@ 选字段）"}
           />
         ) : page === "review" ? (
           <input
@@ -989,6 +995,7 @@ export default function App() {
           <ReviewLib
             reviews={reviews}
             q={reviewQuery}
+            onOpenBook={pickBook}
             focusKey={reviewFocus}
             onFocusDone={() => setReviewFocus(null)}
             onGoto={(id) => {

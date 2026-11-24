@@ -26,7 +26,7 @@ const {
   listReviewBackups,
   restoreReviewLibrary
 } = require("../dist-electron/electron/services/reviewBackup.js");
-const { importFileReviews, exportFileReviews } = require("../dist-electron/electron/services/reviewFileTools.js");
+const { bulkEditReviewFiles, importFileReviews, exportFileReviews } = require("../dist-electron/electron/services/reviewFileTools.js");
 
 async function withLibrary(run) {
   const parent = fs.realpathSync.native(os.tmpdir());
@@ -50,7 +50,7 @@ async function withLibrary(run) {
     await run({ db, dbFile, root, dir, recovery });
   } finally {
     closeDb();
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -101,6 +101,38 @@ test("标签优先，同名书目歧义；无目录保留旧索引", () =>
     fs.renameSync(dir, movedDir);
     assert.throws(() => reconcileReviewFiles(db, dir));
     assert.equal(listReviews(db).length, reviews.length);
+  }));
+
+test("系列书评批量改名使用完整译名，保留正文、其他标签和其他文件", () =>
+  withLibrary(({ db, dir, root }) => {
+    db.prepare("UPDATE books SET series_id = 1 WHERE id = 'book-c'").run();
+    db.prepare("INSERT INTO series (id, name, zh_name) VALUES (2, 'Untranslated', '')").run();
+    const old = "甲-《Example》系列.md";
+    const target = "甲-《示例系列》系列书评.md";
+    const source = path.join(dir, old);
+    const destination = path.join(dir, target);
+    const raw = "\uFEFF---\r\n系列: Example series\r\n作者: 甲\r\n自定义: 保留\r\n---\r\n\r\n正文\r\n";
+    fs.writeFileSync(source, raw);
+    const unchanged = [
+      ["月光.md", front("书籍", "月光", "单册正文")],
+      ["随手记录.md", "未关联正文"],
+      ["《Untranslated》系列.md", front("系列", "Untranslated", "未翻译系列正文")]
+    ];
+    for (const [name, body] of unchanged) fs.writeFileSync(path.join(dir, name), body);
+    reconcileReviewFiles(db, dir, false);
+    const before = listReviews(db).find((row) => row.seriesId === 1);
+
+    fs.mkdirSync(destination);
+    assert.equal(bulkEditReviewFiles(db, dir, path.join(root, "backups"), "renameSeries").renamed, 0);
+    assert.equal(fs.readFileSync(source, "utf8"), raw);
+    fs.rmdirSync(destination);
+
+    assert.equal(bulkEditReviewFiles(db, dir, path.join(root, "backups"), "renameSeries").renamed, 1);
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.readFileSync(destination, "utf8"), raw.replace("Example series", "示例系列"));
+    for (const [name, body] of unchanged) assert.equal(fs.readFileSync(path.join(dir, name), "utf8"), body);
+    const after = listReviews(db).find((row) => row.seriesId === 1);
+    assert.deepEqual([after.id, after.seriesId, after.fileName], [before.id, 1, target]);
   }));
 
 test("重复归属时保留原文，标签唯一胜出，同级并列不猜测", () =>
@@ -190,9 +222,9 @@ test("自动保存合并连续输入，立即保存不等待定时器", () =>
     const runtime = new ReviewRuntime(() => ({ db, dir, recoveryDir: recovery }), (_kind, _id, result) => {
       notices.push(result);
     });
-    const stage = (md, editRevision) => runtime.stage(row.kind, row.id, {
+    const stage = (md, editRevision, immediate = false) => runtime.stage(row.kind, row.id, {
       md, editRevision, expectedFileName: name, expectedVersion: base.version
-    });
+    }, immediate);
 
     assert.ok(stage("前一笔", 1).ok);
     await delay(200);
@@ -205,9 +237,27 @@ test("自动保存合并连续输入，立即保存不等待定时器", () =>
     assert.equal(notices[0].editRevision, 2);
 
     base = readIndexedReview(db, dir, row.kind, row.id);
-    assert.ok(stage("立即保存", 3).ok);
-    assert.ok(runtime.flushAll().ok);
+    assert.ok(stage("待写入正文", 3).ok);
+    const saved = stage("立即保存", 4, true);
+    assert.ok(saved.ok && saved.version);
+    assert.equal(saved.editRevision, 4);
     assert.equal(fs.readFileSync(file, "utf8"), "立即保存");
+  }));
+
+test("标签校验失败后仍能保存原先待写入的正文", () =>
+  withLibrary(({ db, dir, recovery }) => {
+    const row = createFileReview(db, dir, { name: "合成草稿", md: "初始正文" });
+    assert.ok(row.ok);
+    const runtime = new ReviewRuntime(() => ({ db, dir, recoveryDir: recovery }), () => {});
+    const patch = { md: "待写入正文", expectedFileName: row.fileName, expectedVersion: row.version };
+    assert.ok(runtime.stage(row.kind, row.id, { ...patch, editRevision: 1 }).ok);
+    const invalid = runtime.stage(row.kind, row.id, {
+      ...patch, editRevision: 2, frontmatter: [{ key: "tags", value: "首行\n---" }]
+    }, true);
+    assert.equal(invalid.ok, false);
+    assert.equal(readIndexedReview(db, dir, row.kind, row.id).md, "初始正文");
+    assert.ok(runtime.flushAll().ok);
+    assert.equal(readIndexedReview(db, dir, row.kind, row.id).md, "待写入正文");
   }));
 
 test("迁移保留仍在目录中的旧等级，离开的正文只留在迁移备份", () =>
@@ -417,7 +467,7 @@ test("显式作者优先于旧组合值，新建双作者书评与改绑系列�
     assert.equal(series.seriesId, 1);
     assert.equal(series.md, "新正文");
     assert.equal(series.fileName, book.fileName);
-    assert.match(series.raw, /^系列: Example series$/m);
+    assert.match(series.raw, /^系列: 示例系列$/m);
     assert.match(series.raw, /^作者: 甲$/m);
     assert.doesNotMatch(series.raw, /^书籍:/m);
   }));

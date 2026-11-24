@@ -1,5 +1,6 @@
 import type { DB } from "../db";
 import type { BookQuery, BookRow, ListResult, Facets, SortSpec } from "../../shared/types";
+import { BOOK_SEARCH_FIELDS, parseBookSearch, type BookSearchFieldTerm } from "../../shared/bookSearch";
 import { seriesDisplay } from "../../shared/seriesText";
 import { customOfBooks } from "./fieldService";
 
@@ -157,6 +158,41 @@ function keywordWhere(kw: string, alias: string): { sql: string; params: any[] }
   };
 }
 
+/** @字段 的条件。值与别名全走占位符或内部常量，值一律按包含匹配 */
+function fieldWhere(terms: BookSearchFieldTerm[], alias: string): { sql: string; params: any[] } {
+  const where: string[] = [];
+  const params: any[] = [];
+  for (const term of terms) {
+    const like = "%" + term.value + "%";
+    if (term.field === "作者") {
+      where.push(
+        `EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id` +
+          ` WHERE ba.book_id = ${alias}.id AND a.name LIKE ?)`
+      );
+      params.push(like);
+    } else if (term.field === "书名") {
+      where.push(`${alias}.title LIKE ?`);
+      params.push(like);
+    } else if (term.field === "原作名") {
+      where.push(`${alias}.original_title LIKE ?`);
+      params.push(like);
+    } else if (term.field === "系列") {
+      where.push(
+        `EXISTS (SELECT 1 FROM series sx WHERE sx.id = ${alias}.series_id` +
+          ` AND (sx.name LIKE ? OR sx.zh_name LIKE ?))`
+      );
+      params.push(like, like);
+    } else if (term.field === "分类") {
+      where.push(
+        `EXISTS (SELECT 1 FROM book_categories bc JOIN categories c ON c.id = bc.category_id` +
+          ` WHERE bc.book_id = ${alias}.id AND c.name LIKE ?)`
+      );
+      params.push(like);
+    }
+  }
+  return { sql: where.join(" AND "), params };
+}
+
 function readWhere(value: BookQuery["read"], alias: string): string | null {
   if (value === "read") return `${alias}.is_read = 1`;
   if (value === "unread") return `${alias}.is_read = 0`;
@@ -185,17 +221,29 @@ export function bookWhere(
   const params: any[] = [];
   if (opts.base !== false) where.push(`${alias}.deleted_at IS NULL`);
 
-  /* 预设关键词按空白拆词，每个词各自成一条；临时关键词整句一条。两组都要命中 */
+  /* @字段 先拆出来，普通关键词仍旧走原来的全文索引与短词 LIKE。
+     预设词条与临时词条都要拆，系列视图只关普通关键词，字段条件照常进成员子查询 */
+  const presetParsed = parseBookSearch(q.presetQ);
+  const qParsed = parseBookSearch(q.q);
   if (opts.keywords !== false) {
-    for (const word of String(q.presetQ || "").split(/\s+/).filter(Boolean)) {
+    for (const word of presetParsed.keywords.split(/\s+/).filter(Boolean)) {
       const hit = keywordWhere(word, alias);
       if (hit) {
         where.push(hit.sql);
         params.push(...hit.params);
       }
     }
-    const hit = keywordWhere(String(q.q || "").trim(), alias);
+    /* 没有字段词条时保留原串，连空格写法都与旧路径一致 */
+    const rawQ = String(q.q || "").trim();
+    const hit = keywordWhere(qParsed.hasFields ? qParsed.keywords : rawQ, alias);
     if (hit) {
+      where.push(hit.sql);
+      params.push(...hit.params);
+    }
+  }
+  for (const parsed of [presetParsed, qParsed]) {
+    const hit = fieldWhere(parsed.fields, alias);
+    if (hit.sql) {
       where.push(hit.sql);
       params.push(...hit.params);
     }
@@ -307,6 +355,107 @@ export function listBooks(db: DB, q: BookQuery): ListResult {
   );
 
   return { total, rows };
+}
+
+const SUGGEST_LIMIT = 10;
+
+/** 系列关键词同时匹配原名和译名。 */
+export function seriesKeywordWhere(kw: string): { sql: string; params: string[] } | null {
+  const words = kw.split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const parts: string[] = [];
+  const params: string[] = [];
+  for (const word of words) {
+    parts.push("(s.name LIKE ? OR s.zh_name LIKE ?)");
+    const like = "%" + word + "%";
+    params.push(like, like);
+  }
+  return { sql: "(" + parts.join(" AND ") + ")", params };
+}
+
+/**
+ * 字段输入候选。只查当前字段对应的表，带 LIMIT，不把整库读进来。
+ * q 包含当前标签与其它搜索词条，用来把候选收窄到当前结果集；
+ * seriesMode 为真时普通关键词按系列名走，与系列集合的判定一致。
+ */
+export function suggestBookField(
+  db: DB,
+  q: BookQuery,
+  field: string,
+  input: string,
+  seriesMode = false
+): string[] {
+  const key = BOOK_SEARCH_FIELDS.find((value) => value === field);
+  if (!key) return [];
+
+  const built = bookWhere(db, seriesMode ? { ...q, media: undefined } : q, "b", { keywords: !seriesMode });
+  const condParts = [built.sql];
+  const condParams = [...built.params];
+
+  if (seriesMode) {
+    condParts.push("s.id IS NOT NULL");
+    if (q.media && q.media !== "全部") {
+      condParts.push("s.media_type = ?");
+      condParams.push(q.media);
+    }
+    for (const raw of [q.presetQ, q.q]) {
+      const hit = seriesKeywordWhere(parseBookSearch(raw).keywords);
+      if (hit) {
+        condParts.push(hit.sql);
+        condParams.push(...hit.params);
+      }
+    }
+  }
+
+  const scopeSql =
+    `WITH scope AS (` +
+    ` SELECT DISTINCT b.id AS id, b.series_id AS sid, b.title AS title, b.original_title AS orig` +
+    ` FROM books b LEFT JOIN series s ON s.id = b.series_id` +
+    ` WHERE ${condParts.join(" AND ")}) `;
+
+  const text = String(input == null ? "" : input).trim();
+  const like = "%" + text + "%";
+  const prefix = text + "%";
+  const order = "ORDER BY CASE WHEN v LIKE ? THEN 0 ELSE 1 END, v COLLATE NOCASE LIMIT ?";
+
+  let sql = "";
+  let params: any[] = [];
+  if (key === "作者") {
+    sql =
+      `${scopeSql}SELECT DISTINCT a.name AS v FROM authors a` +
+      ` JOIN book_authors ba ON ba.author_id = a.id` +
+      ` JOIN scope sc ON sc.id = ba.book_id` +
+      ` WHERE a.name LIKE ? ${order}`;
+    params = [...condParams, like, prefix, SUGGEST_LIMIT];
+  } else if (key === "书名") {
+    sql =
+      `${scopeSql}SELECT DISTINCT sc.title AS v FROM scope sc` +
+      ` WHERE sc.title LIKE ? AND sc.title <> '' ${order}`;
+    params = [...condParams, like, prefix, SUGGEST_LIMIT];
+  } else if (key === "原作名") {
+    sql =
+      `${scopeSql}SELECT DISTINCT sc.orig AS v FROM scope sc` +
+      ` WHERE sc.orig LIKE ? AND sc.orig <> '' ${order}`;
+    params = [...condParams, like, prefix, SUGGEST_LIMIT];
+  } else if (key === "分类") {
+    sql =
+      `${scopeSql}SELECT DISTINCT c.name AS v FROM categories c` +
+      ` JOIN book_categories bc ON bc.category_id = c.id` +
+      ` JOIN scope sc ON sc.id = bc.book_id` +
+      ` WHERE c.name LIKE ? ${order}`;
+    params = [...condParams, like, prefix, SUGGEST_LIMIT];
+  } else {
+    sql =
+      `${scopeSql}SELECT v FROM (` +
+      `SELECT s.name AS v FROM series s JOIN scope sc ON sc.sid = s.id WHERE s.name LIKE ?` +
+      ` UNION ` +
+      `SELECT s.zh_name AS v FROM series s JOIN scope sc ON sc.sid = s.id` +
+      ` WHERE s.zh_name LIKE ? AND s.zh_name <> '') WHERE v <> '' ${order}`;
+    params = [...condParams, like, like, prefix, SUGGEST_LIMIT];
+  }
+
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map((r) => String(r.v));
 }
 
 export function getBook(db: DB, id: string): BookRow | null {

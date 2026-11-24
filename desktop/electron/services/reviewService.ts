@@ -1,6 +1,7 @@
 import type { DB } from "../db";
 import type { ReviewRow } from "../../shared/types";
 import { seriesAuthor, seriesLabel, seriesTitle } from "./seriesService";
+import { seriesDisplay } from "../../shared/seriesText";
 
 const BASE = `
 SELECT r.id, r.book_id AS bookId, r.series_id AS seriesId, r.grade, r.md, r.file_name AS fileName,
@@ -9,6 +10,11 @@ SELECT r.id, r.book_id AS bookId, r.series_id AS seriesId, r.grade, r.md, r.file
        COALESCE(b.title, NULLIF(s.zh_name, ''), s.name, r.name, '') AS title,
        s.name AS seriesName,
        s.zh_name AS seriesZh,
+       CASE WHEN r.book_id IS NOT NULL THEN NULLIF(b.rating, 0) ELSE
+        (SELECT AVG(b2.rating) FROM books b2
+          WHERE b2.series_id = r.series_id AND b2.deleted_at IS NULL
+            AND b2.is_read = 1 AND b2.rating > 0)
+       END AS rating,
        (SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
           WHERE ba.book_id = r.book_id ORDER BY ba.ord LIMIT 1) AS author
   FROM reviews r
@@ -19,8 +25,8 @@ function shape(rows: any[], kind: ReviewRow["kind"]): ReviewRow[] {
   return rows.map((r) => ({
     ...r,
     kind,
-    /* 列表上给人看的是译名，文件名另走 seriesName 里的原名，两件事分开 */
-    seriesLabel: r.seriesName ? seriesLabel(r.seriesZh || r.seriesName) : undefined,
+    rating: r.rating > 0 ? Number(r.rating) : null,
+    seriesLabel: r.seriesName ? seriesLabel(seriesDisplay(r.seriesZh, r.seriesName)) : undefined,
     author: r.author || ""
   }));
 }
@@ -53,7 +59,12 @@ export function listReviews(db: DB): ReviewRow[] {
          FROM orphan_reviews WHERE deleted_at IS NULL
         ORDER BY happenedAt DESC`
     )
-    .all() as any[]).map((r) => ({ ...r, title: cleanLabel(r), kind: "orphan" as const }));
+    .all() as any[]).map((r) => ({
+      ...r,
+      title: cleanLabel(r),
+      kind: "orphan" as const,
+      rating: null
+    }));
 
   return [...bookReviews, ...seriesReviews, ...drafts, ...orphans];
 }
@@ -256,7 +267,6 @@ export function reviewFileName(db: DB, r: { kind: string; id: number }): string 
   if (!row) return "";
   if (row.fileName) return row.fileName;
   if (row.seriesId) {
-    /* 系列总评跟单本一个规矩：作者打头，中期是系列名，尾巴写「系列」 */
     const au = seriesAuthor(db, row.seriesId);
     const head = au ? au + "-" : "";
     return sanitizeFile(head + seriesTitle(row.seriesName) + "系列.md");
@@ -267,4 +277,9 @@ export function reviewFileName(db: DB, r: { kind: string; id: number }): string 
 
 export function sanitizeFile(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim();
+}
+
+export function seriesReviewStem(author: string, displayName: string): string {
+  const title = displayName.replace(/^(?:《(.+)》|〈(.+)〉|【(.+)】)$/, "$1$2$3");
+  return sanitizeFile((author ? author + "-" : "") + "《" + title + "》系列书评");
 }

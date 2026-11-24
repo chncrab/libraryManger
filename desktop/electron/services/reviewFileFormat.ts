@@ -252,7 +252,7 @@ function matchStem(db: DB, stem: string): ReviewMatch | null {
   const s = S(stem);
   if (!s || s.startsWith("草稿-")) return null;
 
-  const suffix = /^(.*)(书评|系列)$/.exec(s);
+  const suffix = /^(.*?)(系列书评|书评|系列)$/.exec(s);
   if (suffix && suffix[1].includes("《")) {
     const parsed = splitLabel(suffix[1]);
     if (suffix[2] === "书评") {

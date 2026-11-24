@@ -42,7 +42,7 @@ export class ReviewRuntime {
     return `${kind}:${id}`;
   }
 
-  stage(kind: string, id: number, p: ReviewPatch): RvResult {
+  stage(kind: string, id: number, p: ReviewPatch, immediate = false): RvResult {
     if (!KINDS.has(kind)) return fail("invalid review kind");
     if (!Number.isInteger(id) || id <= 0) return fail("invalid review id");
     if (!p || typeof p.md !== "string") return fail("invalid review body");
@@ -85,11 +85,22 @@ export class ReviewRuntime {
       patch.editRevision > base.editRevision
     ) {
       patch = { ...patch, expectedVersion: base.postVersion };
-      this.bases.set(k, { ...base, preVersion: base.postVersion });
     }
 
-    this.pending.set(k, { kind: kind as Kind, id, dir: ctx.dir, patch });
+    const item: Pending = { kind: kind as Kind, id, dir: ctx.dir, patch };
     const old = this.timers.get(k);
+    if (immediate) {
+      // 校验失败时保留已有的待写正文，显式提交的标签由编辑界面继续保留。
+      const result = this.save(item);
+      if (this.settled(result)) {
+        if (old) clearTimeout(old);
+        this.timers.delete(k);
+        this.pending.delete(k);
+      }
+      return this.report(item, result);
+    }
+
+    this.pending.set(k, item);
     if (old) clearTimeout(old);
     this.timers.set(k, setTimeout(() => {
       this.timers.delete(k);
@@ -143,50 +154,43 @@ export class ReviewRuntime {
     return typeof result.msg === "string" && result.msg ? result.msg : fallback;
   }
 
-  private flushKey(k: string): void {
+  private flushKey(k: string): RvResult {
     const item = this.pending.get(k);
-    if (!item) return;
+    if (!item) return fail("没有待保存的正文");
+    const timer = this.timers.get(k);
+    if (timer) clearTimeout(timer);
+    this.timers.delete(k);
     const result = this.save(item);
     if (this.settled(result)) this.pending.delete(k);
-    this.notify(item.kind, item.id, {
-      ...result,
-      editRevision: item.patch.editRevision,
-    } as RvResult);
+    return this.report(item, result);
+  }
+
+  private report(item: Pending, result: RvResult): RvResult {
+    const resolved = { ...result, editRevision: item.patch.editRevision };
+    this.notify(item.kind, item.id, resolved);
+    return resolved;
   }
 
   flushAll(): RvResult {
-    for (const timer of this.timers.values()) clearTimeout(timer);
-    this.timers.clear();
-
-    const items = [...this.pending.entries()];
-    if (items.length === 0) return { ok: true } as RvResult;
-
     let ok = true;
     let firstBlockingMsg: string | undefined;
     let recoveryPath: string | undefined;
     let recoveryMsg: string | undefined;
 
-    for (const [k, item] of items) {
-      const result = this.save(item);
+    for (const k of [...this.pending.keys()]) {
+      const result = this.flushKey(k);
       const path = this.recoveryPathOf(result);
       if (path && !recoveryPath) {
         recoveryPath = path;
         recoveryMsg = this.messageOf(result, "review recovery saved");
       }
 
-      if (this.settled(result)) {
-        this.pending.delete(k);
-      } else {
+      if (!this.settled(result)) {
         ok = false;
         if (!firstBlockingMsg) {
           firstBlockingMsg = this.messageOf(result, "review save failed");
         }
       }
-
-      this.notify(item.kind, item.id, {
-        ...result,
-        editRevision: item.patch.editRevision,
-      } as RvResult);
     }
 
     const out: RvResult & { recoveryPath?: string } = { ok };
