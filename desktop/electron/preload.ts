@@ -17,6 +17,7 @@ import type {
 
 const api: BooklibApi = {
   info: () => ipcRenderer.invoke("app:info"),
+  setWindowTheme: (theme) => ipcRenderer.invoke("app:windowTheme", theme),
 
   libraryRecent: () => ipcRenderer.invoke("library:recent"),
   chooseLibrary: () => ipcRenderer.invoke("library:choose"),

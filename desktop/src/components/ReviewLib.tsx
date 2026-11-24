@@ -12,6 +12,7 @@ import type { ReviewFrontmatterField, ReviewIoSummary, ReviewRow } from "../../s
 
 interface Props {
   reviews: ReviewRow[];
+  q: string;
   onGoto: (bookId: string) => void;
   onChanged: () => void;
   /** 从系列弹层切过来时指定要选中的那一篇，形如 series:12 */
@@ -47,6 +48,7 @@ const fileNameOf = (r: ReviewRow | null | undefined) =>
 /* 书评库：左栏是清单，中间是正文。正文可直接编辑，停手 700 毫秒自动落库 */
 export default function ReviewLib({
   reviews,
+  q,
   onGoto,
   onChanged,
   focusKey,
@@ -56,7 +58,6 @@ export default function ReviewLib({
   onRefreshDir
 }: Props) {
   const [selKey, setSelKey] = useState<string | null>(null);
-  const [q, setQ] = useState("");
   const [sort, setSort] = useState<"time" | "title" | "len" | "grade">("time");
   const [grade, setGrade] = useState("all");
 
@@ -784,9 +785,6 @@ export default function ReviewLib({
     <div className="rvlib">
       <aside className="rvs">
         <div className="rvs-h">
-          <span className="rvs-t" title={"书评 " + reviews.length + " 篇"}>
-            书评 {reviews.length} 篇
-          </span>
           <button className="mini" onClick={addNew} title="新建一篇空书评，写完再挂到书上">
             新建
           </button>
@@ -800,10 +798,7 @@ export default function ReviewLib({
           >
             更多 ▾
           </button>
-        </div>
-        <div className="rvs-tools">
-          <input className="rvs-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜书名或正文" />
-          <select className="rvs-sel" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+          <select className="rvs-sel" aria-label="书评排序" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
             <option value="time">最近改的</option>
             <option value="title">书名</option>
             <option value="len">字数</option>

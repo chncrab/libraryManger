@@ -671,6 +671,7 @@ export interface CoverQueueItem {
 
 export interface BooklibApi {
   info(): Promise<AppInfo>;
+  setWindowTheme(theme: "light" | "dark"): Promise<void>;
 
   /* 书库文件夹：一个文件夹装全部用户数据，换机器搬它就行 */
   libraryRecent(): Promise<LibraryBrief[]>;

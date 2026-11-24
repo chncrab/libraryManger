@@ -257,15 +257,16 @@ async function smoke() {
     await until("切到标签「" + name + "」", async () => (await activeTab()) === name);
   };
 
-  const clickTabX = async (name) => {
-    const found = await run((n) => {
-      const tab = [...document.querySelectorAll(".viewtabs .vt-tab.custom")].find((t) => (t.querySelector(".vt-name") || {}).textContent?.trim() === n);
-      const button = tab && tab.querySelector(".vt-x");
-      if (!button) return false;
-      button.click();
+  const tabGesture = (name, event, button) =>
+    run((n, type, whichButton) => {
+      const tab = [...document.querySelectorAll(".viewtabs .vt-tab")].find((t) => t.querySelector(".vt-name")?.textContent?.trim() === n);
+      if (!tab) return false;
+      tab.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: whichButton }));
       return true;
-    }, name);
-    assert(found, "「" + name + "」没有删除按钮");
+    }, name, event, button);
+
+  const requestTabDelete = async (name, button = 0) => {
+    assert(await tabGesture(name, button === 1 ? "auxclick" : "dblclick", button), "找不到标签「" + name + "」");
     await until("删除确认框", () => query(".cfm"));
   };
 
@@ -454,7 +455,25 @@ async function smoke() {
       defaults.join("|") === "全部|小说|漫画|系列小说|系列漫画",
       defaults.join(" / ")
     );
-    check("「全部」没有删除按钮", (await run(() => !!document.querySelector(".vt-all .vt-x"))) === false);
+    check("标签上没有删除叉号", !(await query(".vt-x")));
+    const chrome = await run(() => {
+      const rect = (sel) => document.querySelector(sel).getBoundingClientRect();
+      const tab = rect(".vt-all .vt-tab");
+      const last = rect(".vt-scroll .vt-tab:last-child");
+      const plus = rect(".vt-plus");
+      const row = rect(".viewtabs");
+      const search = rect(".topbar .search");
+      const safe = navigator.windowControlsOverlay?.getTitlebarAreaRect();
+      return {
+        aligned: Math.abs(tab.height - plus.height) < 1 && Math.abs(tab.top - plus.top) < 1,
+        nextToTabs: plus.left >= last.right && plus.left - last.right <= 10,
+        searchBelow: search.top >= row.bottom && search.left < 30,
+        overlay: !!navigator.windowControlsOverlay?.visible && !!safe && plus.right < safe.right && safe.right < innerWidth
+      };
+    });
+    check("加号与标签等高并紧跟最后一个标签", chrome.aligned && chrome.nextToTabs);
+    check("搜索在第二行左侧", chrome.searchBelow);
+    if (process.platform === "win32") check("标签避开 Windows 原生窗口按钮", chrome.overlay);
     await until("全部默认表格", async () => (await count(BOOK_ROWS)) === 11, 10000);
     const allTitles = await run(() => [...document.querySelectorAll(".table:not(.sertable) tbody td.title")].map((e) => e.textContent.trim()));
     check("「全部」表格含所有媒介", allTitles.includes("银河英雄传说 1 黎明篇") && allTitles.includes("苍蓝钢铁 1"));
@@ -466,6 +485,9 @@ async function smoke() {
     );
     await wait(250);
     check("「全部」不弹视图菜单", (await query(".ctx-i")) === false);
+    await tabGesture("全部", "dblclick", 0);
+    await tabGesture("全部", "auxclick", 1);
+    check("「全部」对双击和中键都不弹删除确认", !(await query(".cfm")));
 
     const fixedRejected = await run(async () => {
       const r = await window.api.saveViews([
@@ -557,7 +579,7 @@ async function smoke() {
 
     await openTabMenu("丁已读系列");
     const menuTexts = await run(() => [...document.querySelectorAll(".ctx-i")].map((e) => e.textContent.trim()));
-    check("右键菜单给编辑与删除", menuTexts.includes("编辑视图") && menuTexts.includes("删除视图…"), menuTexts.join("|"));
+    check("标签右键菜单只提供编辑", menuTexts.join("|") === "编辑视图", menuTexts.join("|"));
     assert(await menuItem("编辑视图"), "点不到「编辑视图」");
     await until("编辑视图弹窗", () => query(".cadmin.vp"));
     check("编辑弹窗带回原名称", (await rowInputValue("名称")) === "丁已读系列", await rowInputValue("名称"));
@@ -603,13 +625,13 @@ async function smoke() {
     await clickTab("丙星海");
     await until("丙星海仍能打开", async () => (await count(".card")) === 4, 10000);
     const beforeDelete = (await viewsApi()).views.length;
-    await clickTabX("丙星海");
+    await requestTabDelete("丙星海");
     check("删除弹窗写着视图名", (await run(() => (document.querySelector(".cfm") || {}).textContent || "")).includes("丙星海"));
     assert(await confirmDialog(false), "点不到取消");
     await until("取消后弹窗收起", async () => (await query(".cfm")) === false);
     check("取消删除保留标签", (await tabNames()).includes("丙星海") && (await viewsApi()).views.length === beforeDelete);
 
-    await clickTabX("丙星海");
+    await requestTabDelete("丙星海", 1);
     assert(await confirmDialog(true), "点不到确认删除");
     await until("确认后标签消失", async () => !(await tabNames()).includes("丙星海"), 10000);
     await until("删除当前标签后选中右侧", async () => (await activeTab()) === "甲单册表格", 10000);
@@ -617,7 +639,7 @@ async function smoke() {
     check("删视图不动书", (await run(async () => (await window.api.listBooks({ limit: 1 })).total)) === 11);
 
     await clickTab("丁已读系列改");
-    await clickTabX("丁已读系列改");
+    await requestTabDelete("丁已读系列改");
     assert(await confirmDialog(true), "点不到确认删除");
     await until("删除末位后选中左侧", async () => (await activeTab()) === "乙系列表格", 10000);
     check(
@@ -625,6 +647,10 @@ async function smoke() {
       (await tabNames()).join("|") === "全部|小说|漫画|系列小说|系列漫画|甲单册表格|乙系列表格",
       (await tabNames()).join(" / ")
     );
+    await requestTabDelete("甲单册表格", 1);
+    assert(await confirmDialog(true), "点不到确认删除");
+    await until("后台标签被删除", async () => !(await tabNames()).includes("甲单册表格"), 10000);
+    check("中键删除后台标签保留当前页", (await activeTab()) === "乙系列表格");
 
     /* ---- 八、顺序与删除落到配置 ---- */
     const namesBefore = await tabNames();
@@ -637,8 +663,8 @@ async function smoke() {
     check("重启后标签顺序不变", (await tabNames()).join("|") === namesBefore.join("|"), (await tabNames()).join(" / "));
     check("重启后配置顺序不变", (await viewsApi()).views.map((v) => v.name).join("|") === orderBefore.join("|"));
     check("重启默认打开全部", (await activeTab()) === "全部");
-    await clickTab("甲单册表格");
-    await until("重启后表格视图仍可用", async () => (await count(BOOK_ROWS)) === 8, 10000);
+    await clickTab("乙系列表格");
+    await until("重启后系列表格仍可用", async () => (await count(SERIES_ROWS)) === 3, 10000);
 
     /* ---- 九、两个书库的配置互不影响 ---- */
     const switched = await run(async (rootPath) => JSON.stringify(await window.api.openLibrary(rootPath)), empty);
@@ -658,7 +684,7 @@ async function smoke() {
     await waitForApp();
     await until("原书库表格回来", async () => (await count(BOOK_ROWS)) === 11, 15000);
     check("另一个书库的标签没有跟过来", !(await tabNames()).includes("乙库视图"), (await tabNames()).join(" / "));
-    check("原书库的两个自定义视图还在", (await tabNames()).includes("甲单册表格") && (await tabNames()).includes("乙系列表格"));
+    check("原书库的已保存视图与后台删除都保留", !(await tabNames()).includes("甲单册表格") && (await tabNames()).includes("乙系列表格"));
 
     /* ---- 十、删空自定义视图，重启仍只见「全部」 ---- */
     const cleared = await run(async () => (await window.api.saveViews([])).ok);
@@ -675,6 +701,31 @@ async function smoke() {
     await until("重开后只剩全部", async () => (await count(BOOK_ROWS)) === 11, 15000);
     check("删空后重开不补预设", (await tabNames()).join("|") === "全部", (await tabNames()).join(" / "));
     check("删空后重开配置仍为空", (await viewsApi()).status === "empty");
+
+    /* ---- 十一、书库和书评共用搜索位置，各自搜索 ---- */
+    const created = await run(async () => Promise.all([
+      window.api.createReview({ bookId: "n1", md: "窗口测试唯一正文" }),
+      window.api.createReview({ bookId: "m1", md: "另一篇合成书评" })
+    ]));
+    check("创建合成书评", created.every((r) => r.ok));
+    await setSearch("星海");
+    await until("书库关键词生效", async () => (await count(BOOK_ROWS)) === 5, 10000);
+    const openPage = (label) => run((name) => {
+      const button = [...document.querySelectorAll(".topbar .seg button")].find((b) => b.textContent.trim() === name);
+      if (!button) return false;
+      button.click();
+      return true;
+    }, label);
+    assert(await openPage("书评"), "找不到书评入口");
+    await until("书评列表加载", async () => (await count(".rvi")) === 2, 10000);
+    check("书评仅保留第二行搜索框", (await count(".topbar .search[aria-label='搜索书评']")) === 1 && !(await query(".rvs-q")));
+    await setSearch("测试唯一正文");
+    await until("书评正文关键词生效", async () => (await count(".rvi")) === 1, 10000);
+    check("按正文过滤出对应书评", (await run(() => document.querySelector(".rvi-t").textContent)).includes("银河英雄传说"));
+    assert(await openPage("阅读"), "找不到阅读入口");
+    await until("阅读页无通用搜索框", async () => !(await query(".topbar .search")));
+    await clickTab("全部");
+    await until("切回书库时临时搜索保留", async () => (await count(BOOK_ROWS)) === 5 && (await searchValue()) === "星海", 10000);
     checkNoExceptions();
 
     console.log("\n视图冒烟通过");

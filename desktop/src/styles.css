@@ -41,7 +41,7 @@ button {
 
 .app { display: flex; flex-direction: column; height: 100%; }
 
-/* 顶栏 */
+/* 搜索和板块入口 */
 .topbar {
   display: flex;
   align-items: center;
@@ -51,8 +51,6 @@ button {
   border-bottom: 1px solid var(--line);
   flex: none;
 }
-.brand { font-size: 14px; letter-spacing: 1px; color: var(--acc2); }
-.brand small { color: var(--fg3); font-size: 11px; letter-spacing: 0; margin-left: 8px; }
 .spacer { flex: 1; }
 .search {
   width: 300px;
@@ -101,12 +99,6 @@ button {
   letter-spacing: 1px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 5px;
-}
-.side-tip {
-  margin: 2px 12px 8px;
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--fg3);
 }
 .facet {
   display: flex;
@@ -345,33 +337,10 @@ button {
   background: var(--bg2);
 }
 .rvs-h { display: flex; align-items: center; gap: 6px; padding: 11px 12px 9px; min-width: 0; }
-.rvs-t {
-  font-size: 12px;
-  color: var(--fg2);
-  letter-spacing: 0.4px;
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rvs-tools { display: flex; gap: 6px; padding: 0 12px 7px; }
-.rvs-q {
-  flex: 1;
-  height: 26px;
-  min-width: 0;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 12px;
-  padding: 0 8px;
-  outline: none;
-}
-.rvs-q:focus { border-color: var(--acc); }
 .rvs-sel {
   height: 26px;
   flex: none;
+  margin-left: auto;
   border: 1px solid var(--line2);
   border-radius: 6px;
   background: var(--bg);
@@ -2223,39 +2192,54 @@ button {
 .rd-tip-kv b { font-weight: normal; color: var(--fg2); font-variant-numeric: tabular-nums; }
 .rd-tip-kv b.rd-tip-r { color: var(--acc); }
 
-/* ---------- 书库视图标签（浏览器式第二行） ---------- */
+/* ---------- 标题栏与书库视图标签 ---------- */
+.window-titlebar-placeholder {
+  flex: none;
+  height: calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px));
+  background: var(--bg2);
+  -webkit-app-region: drag;
+}
+.app > .gate { flex: 1; height: auto; min-height: 0; }
+
 .viewtabs {
+  --vt-height: 28px;
+  --caption-width: calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%));
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 4px;
   flex: none;
   min-width: 0;
-  padding: 6px 10px 0;
+  height: max(36px, calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px)));
+  padding: 0 calc(var(--caption-width) + 42px) 0 calc(env(titlebar-area-x, 0px) + 10px);
   background: var(--bg2);
   border-bottom: 1px solid var(--line);
+  user-select: none;
+  -webkit-app-region: drag;
 }
+.viewtabs > * { -webkit-app-region: no-drag; }
 .vt-all { flex: none; display: flex; }
 .vt-scroll {
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 4px;
+  height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
-.vt-scroll::-webkit-scrollbar { height: 4px; }
-.vt-scroll::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 2px; }
+.vt-scroll::-webkit-scrollbar { display: none; }
 .vt-tab {
   flex: 0 1 auto;
   min-width: 56px;
   max-width: 190px;
-  height: 30px;
+  height: var(--vt-height);
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 7px 0 11px;
+  justify-content: center;
+  padding: 0 11px;
   border: 1px solid var(--line);
   border-bottom: none;
   border-radius: 7px 7px 0 0;
@@ -2283,31 +2267,11 @@ button {
 .vt-tab.custom:active { cursor: grabbing; }
 .vt-tab.dragging { opacity: 0.45; }
 .vt-tab.over { border-color: var(--acc); }
-.vt-tab.fixed { padding-right: 11px; }
 .vt-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vt-x {
-  width: 17px;
-  height: 17px;
-  padding: 0;
-  flex: none;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg3);
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.35;
-}
-.vt-tab:hover .vt-x,
-.vt-tab.on .vt-x { opacity: 0.8; }
-.vt-x:hover { background: var(--bg4); color: var(--red); opacity: 1; }
 .vt-plus {
   flex: none;
-  align-self: center;
-  width: 26px;
-  height: 26px;
-  margin: 0 2px 5px;
+  width: var(--vt-height);
+  height: var(--vt-height);
   padding: 0;
   border: 1px dashed var(--line2);
   border-radius: 6px;

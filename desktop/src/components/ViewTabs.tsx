@@ -16,7 +16,7 @@ interface Props {
 }
 
 /**
- * 浏览器式第二行标签。最左「全部」固定，后面的自定义标签横向排，
+ * 顶部标题栏的标签。最左「全部」固定，后面的自定义标签横向排，
  * 放不下就压缩并横向滚动。拖动只改自定义标签的顺序。
  */
 export default function ViewTabs({ views, currentId, active, onSelect, onAdd, onMenu, onDelete, onMove, addDisabled }: Props) {
@@ -91,6 +91,15 @@ export default function ViewTabs({ views, currentId, active, onSelect, onAdd, on
                 setOverId(null);
               }}
               onClick={() => onSelect(v.id)}
+              onDoubleClick={() => onDelete(v)}
+              onMouseDown={(e) => {
+                if (e.button === 1) e.preventDefault();
+              }}
+              onAuxClick={(e) => {
+                if (e.button !== 1) return;
+                e.preventDefault();
+                onDelete(v);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -102,18 +111,6 @@ export default function ViewTabs({ views, currentId, active, onSelect, onAdd, on
               }}
             >
               <span className="vt-name">{v.name}</span>
-              <button
-                className="vt-x"
-                title={"删除视图「" + v.name + "」"}
-                aria-label={"删除视图 " + v.name}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(v);
-                }}
-                onKeyDown={(e) => e.stopPropagation()}
-              >
-                ×
-              </button>
             </div>
           );
         })}

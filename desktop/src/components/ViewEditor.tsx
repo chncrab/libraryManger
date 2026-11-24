@@ -145,7 +145,6 @@ export default function ViewEditor({ initial, cats, onCancel, onSave }: Props) {
       <div className="cadmin vp" role="dialog" aria-modal="true" aria-label={initial ? "编辑视图" : "新建视图"}>
         <div className="cad-h">
           <h3>{initial ? "编辑视图" : "新建视图"}</h3>
-          <span className="dim">预设只是起点，保存前都能改</span>
           <span className="spacer" />
           <button className="xbtn" aria-label="关闭" onClick={onCancel} disabled={busy}>
             ×
@@ -201,7 +200,6 @@ export default function ViewEditor({ initial, cats, onCancel, onSave }: Props) {
                     </button>
                   ))}
                 </div>
-                <span className="vp-hint">单册一张卡一本书，系列一张卡一个系列</span>
               </div>
             </div>
 
@@ -231,7 +229,6 @@ export default function ViewEditor({ initial, cats, onCancel, onSave }: Props) {
                   <option value="小说">小说</option>
                   <option value="漫画">漫画</option>
                 </select>
-                <span className="vp-hint">选全媒介后，进入视图还能在左栏临时挑媒介</span>
               </div>
             </div>
 

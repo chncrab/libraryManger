@@ -90,6 +90,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [page, setPage] = useState<Page>("library");
+  const [reviewQuery, setReviewQuery] = useState("");
   const [views, setViews] = useState<LibraryView[]>([]);
   const [viewsLoaded, setViewsLoaded] = useState(false);
   const [viewId, setViewId] = useState(FIXED_VIEW_ID);
@@ -280,6 +281,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     saveStr("theme", theme);
+    void api.setWindowTheme(theme === "light" ? "light" : "dark").catch(() => undefined);
   }, [theme]);
 
   const setTemp = (p: Partial<TempState>) => {
@@ -472,6 +474,7 @@ export default function App() {
   /* 书评、阅读页不留书库详情，回到书库时保留点开的那本 */
   useEffect(() => {
     if (page !== "library") setPicked([]);
+    if (page !== "review") setReviewQuery("");
   }, [page]);
 
   const selectView = (id: string) => {
@@ -482,14 +485,14 @@ export default function App() {
     setAdvOpen(false);
   };
 
-  /* 全局快捷键：/ 搜书，Ctrl 1 第一个自定义书架，Ctrl 2 全部，Ctrl 3 书评，Ctrl 4 阅读 */
+  /* 全局快捷键：/ 聚焦当前搜索，Ctrl 1 第一个自定义书架，Ctrl 2 全部，Ctrl 3 书评，Ctrl 4 阅读 */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const typing = !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
-      if (e.key === "/" && !typing && page === "library") {
+      if (e.key === "/" && !typing && searchRef.current) {
         e.preventDefault();
-        searchRef.current?.focus();
+        searchRef.current.focus();
         return;
       }
       if (e.key === "Escape") {
@@ -902,24 +905,22 @@ export default function App() {
   }, [seriesRows, seriesRowsKey, seriesKey, serSort]);
 
   /* 还没选书库就先把整页换成选择页，主界面一律不铺 */
-  if (!info) {
+  if (!info?.hasLibrary) {
     return (
-      <div className="gate">
-        <div className="gate-in">
-          <div className="gate-lead">正在打开…</div>
-        </div>
+      <div className="app">
+        <div className="window-titlebar-placeholder" aria-hidden="true" />
+        {info ? (
+          <LibraryGate onOpened={() => window.location.reload()} />
+        ) : (
+          <div className="gate">
+            <div className="gate-in">
+              <div className="gate-lead">正在打开…</div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
-  if (!info.hasLibrary) return <LibraryGate onOpened={() => window.location.reload()} />;
-
-  const viewCtxItems: CtxItem[] = vctx
-    ? [
-        { key: "edit", label: "编辑视图" },
-        { key: "s", label: "", sep: true },
-        { key: "del", label: "删除视图…", danger: true }
-      ]
-    : [];
 
   const sidebar = (
     <Sidebar
@@ -934,23 +935,40 @@ export default function App() {
 
   return (
     <div className="app">
+      <ViewTabs
+        views={views}
+        currentId={viewId}
+        active={page === "library"}
+        onSelect={selectView}
+        onAdd={() => setEditor({ view: null })}
+        onMenu={(e, v) => setVctx({ x: e.clientX, y: e.clientY, view: v })}
+        onDelete={(v) => setDelView(v)}
+        onMove={moveView}
+        addDisabled={!viewsLoaded}
+      />
       <header className="topbar">
-        <div className="brand">
-          藏书库
-          <small>
-            {info.bookCount + " 本 · 书评 " + info.reviewCount + " 篇" + (info.orphanCount ? " · 未匹配 " + info.orphanCount : "")}
-          </small>
-        </div>
-        <span className="spacer" />
         {page === "library" ? (
           <input
+            key="book-search"
             ref={searchRef}
             className="search"
+            aria-label={unit === "series" ? "搜索系列" : "搜索藏书"}
             value={temp.q}
             onChange={(e) => setTemp({ q: e.target.value })}
             placeholder={unit === "series" ? "搜系列名、原名（/ 聚焦）" : "搜书名、作者、原名（/ 聚焦）"}
           />
+        ) : page === "review" ? (
+          <input
+            key="review-search"
+            ref={searchRef}
+            className="search"
+            aria-label="搜索书评"
+            value={reviewQuery}
+            onChange={(e) => setReviewQuery(e.target.value)}
+            placeholder="搜书名或正文"
+          />
         ) : null}
+        <span className="spacer" />
         <div className="seg">
           <button className={page === "review" ? "on" : ""} onClick={() => setPage("review")}>
             书评
@@ -964,24 +982,13 @@ export default function App() {
         </button>
       </header>
 
-      <ViewTabs
-        views={views}
-        currentId={viewId}
-        active={page === "library"}
-        onSelect={selectView}
-        onAdd={() => setEditor({ view: null })}
-        onMenu={(e, v) => setVctx({ x: e.clientX, y: e.clientY, view: v })}
-        onDelete={(v) => setDelView(v)}
-        onMove={moveView}
-        addDisabled={!viewsLoaded}
-      />
-
       <div className="body">
         {page === "read" ? (
           <ReadView ver={tick} onPick={(id) => pickBook(id)} />
         ) : page === "review" ? (
           <ReviewLib
             reviews={reviews}
+            q={reviewQuery}
             focusKey={reviewFocus}
             onFocusDone={() => setReviewFocus(null)}
             onGoto={(id) => {
@@ -1193,12 +1200,8 @@ export default function App() {
         <CtxMenu
           x={vctx.x}
           y={vctx.y}
-          items={viewCtxItems}
-          onPick={(k) => {
-            if (!vctx) return;
-            if (k === "edit") setEditor({ view: vctx.view });
-            if (k === "del") setDelView(vctx.view);
-          }}
+          items={[{ key: "edit", label: "编辑视图" }]}
+          onPick={() => setEditor({ view: vctx.view })}
           onClose={() => setVctx(null)}
         />
       ) : null}

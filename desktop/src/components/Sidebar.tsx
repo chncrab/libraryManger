@@ -74,8 +74,6 @@ export default function Sidebar({ facets, filter, presetMedia = "", unit = "book
 
   return (
     <aside className="side">
-      <div className="side-tip">普通点击单选　Shift 点击叠加　再点一次取消</div>
-
       <h4>媒介</h4>
       {presetMedia ? (
         <div className="facet preset" title="这是视图预设的媒介，要改请编辑视图">

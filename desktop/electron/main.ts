@@ -434,6 +434,14 @@ function saveWinState(w: BrowserWindow): void {
   }
 }
 
+function windowTitleBar(theme: "light" | "dark"): Electron.TitleBarOverlayOptions {
+  return {
+    height: 36,
+    color: theme === "light" ? "#f3f0e9" : "#181613",
+    symbolColor: theme === "light" ? "#29251f" : "#eae6df"
+  };
+}
+
 function createWindow(): void {
   const st = loadWinState();
   win = new BrowserWindow({
@@ -446,6 +454,9 @@ function createWindow(): void {
     backgroundColor: "#12100e",
     title: "藏书库",
     autoHideMenuBar: true,
+    ...(process.platform === "win32"
+      ? { titleBarStyle: "hidden" as const, titleBarOverlay: windowTitleBar("dark") }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -772,6 +783,11 @@ async function runCoverBatch(backfill: boolean): Promise<void> {
 
 function registerIpc(): void {
   const D = requireDb;
+
+  ipcMain.handle("app:windowTheme", (event, theme: unknown) => {
+    if (process.platform !== "win32" || !win || event.sender !== win.webContents) return;
+    if (theme === "light" || theme === "dark") win.setTitleBarOverlay(windowTitleBar(theme));
+  });
 
   ipcMain.handle("app:info", () => {
     const base = {
