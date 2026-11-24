@@ -48,6 +48,19 @@ const clickText = (sel, text) =>
     el.click(); return true;
   })()`);
 
+/* 书库的布局与媒介都成了标签栏里的视图，顶栏 .seg 只剩书评和阅读 */
+const clickTab = async (name) => {
+  const ok = await js(`(() => {
+    const tab = [...document.querySelectorAll('.viewtabs .vt-tab')]
+      .find(t => ((t.querySelector('.vt-name') || {}).textContent || '').trim() === ${JSON.stringify(name)});
+    if (!tab) return false;
+    tab.click(); return true;
+  })()`);
+  check("能切到标签「" + name + "」", ok === true);
+  await wait(900);
+};
+const numOf = (txt) => Number((String(txt).match(/共\s*(\d+)/) || [])[1] || 0);
+
 const totalText = () => js(`(document.querySelector('.toolbar')||{}).textContent||''`);
 
 /* 左栏某一档里某个取值的计数 */
@@ -64,10 +77,22 @@ await js(`Object.keys(localStorage).filter(k => k.startsWith('booklib.')).forEac
 await js("location.reload()");
 await wait(3000);
 
-// 1 首屏
+// 1 首屏：默认打开「全部」，一行一本的表格
 await wait(900);
+const tabs0 = await js("[...document.querySelectorAll('.viewtabs .vt-tab .vt-name')].map(e => e.textContent.trim())");
+check(
+  "首屏标签以全部开头并保留四个预设",
+  tabs0[0] === "全部" && ["小说", "漫画", "系列小说", "系列漫画"].every((n) => tabs0.includes(n)),
+  tabs0.join("/")
+);
+const rows0 = await js("document.querySelectorAll('.table tbody tr').length");
+check("首屏默认全部表格渲染 120 行", rows0 === 120, "实际 " + rows0);
+const allTotalN = numOf(await totalText());
+
+/* 原来「书架」上的一格一本，现在由「小说」预设承担；卡片相关的断言都放这里 */
+await clickTab("小说");
 const cards = await js("document.querySelectorAll('.card').length");
-check("首屏书架渲染 120 张卡", cards === 120, "实际 " + cards);
+check("小说预设的书架有卡片", cards > 0, "实际 " + cards);
 const coverOk = await js(`(() => {
   const imgs = [...document.querySelectorAll('.card img, .sh-card img, img')].slice(0, 6);
   const loaded = imgs.filter((i) => i.complete && i.naturalWidth > 0).length;
@@ -81,22 +106,18 @@ check(
 
 // 2 左栏分面跟媒介走：切漫画后「推理」的计数应该变小
 const catAll = await facetN("推理");
-const numOf = (txt) => Number((String(txt).match(/共\s*(\d+)/) || [])[1] || 0);
-const allTotalN = numOf(await totalText());
-await clickText(".seg button", "漫画");
-await wait(900);
+await clickTab("漫画");
 let t = await totalText();
 const mangaTotalN = numOf(t);
 check("切到漫画后总数少于全部", allTotalN > 0 && mangaTotalN > 0 && mangaTotalN < allTotalN, allTotalN + " → " + mangaTotalN);
 const catManga = await facetN("推理");
 check("左栏分面跟着媒介重算", catAll > 0 && catManga > 0 && catManga !== catAll, "全部 " + catAll + " → 漫画 " + catManga);
 const decAll = await js("document.querySelectorAll('.side h4').length");
-check("左栏档数 7（分类/封面/实体书/电子书/阅读状态/出版年代/系列）", decAll === 7, "实际 " + decAll);
+check("左栏八档（媒介/分类/封面/实体书/电子书/阅读状态/出版年代/系列）", decAll === 8, "实际 " + decAll);
 
-// 3 回全部再搜索（两字走 LIKE）。查询词取列表里第一本书标题的开头两个字，不写死书名
-await clickText(".seg button", "全部");
-await wait(1000);
-const probe = await js("((document.querySelector('.card .t')||{}).textContent||'').trim().slice(0, 2)");
+// 3 回小说书架搜索（两字走 LIKE）。查询词取列表里第一本书标题的开头两个字，不写死书名
+await clickTab("小说");
+const probe = await js("(document.querySelector('.card')?.title || '').trim().slice(0, 2)");
 await js(`(() => { const i = document.querySelector('.search'); const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
   s.call(i, ${JSON.stringify(probe)}); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 await wait(1200);
@@ -108,11 +129,11 @@ check(
   t.slice(0, 14) + " / " + hitTitle
 );
 
-// 4 清空搜索，切表格
+// 4 清空搜索，切回全部表格
 await js(`(() => { const i = document.querySelector('.search'); const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
   s.call(i, ''); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 await wait(800);
-await clickText(".seg button", "表格");
+await clickTab("全部");
 await wait(800);
 const rows = await js("document.querySelectorAll('.table tbody tr').length");
 check("表格视图有行", rows > 0, "行数 " + rows);
@@ -232,8 +253,8 @@ check("中间显示书评正文", rvBody.length > 0, rvBody.trim().slice(0, 18))
 const rvLeftX = await js("(() => { const a=document.querySelector('.rvs'); const b=document.querySelector('.rvm'); return a && b ? Math.round(a.getBoundingClientRect().width) + '/' + Math.round(b.getBoundingClientRect().left) : '0/0'; })()");
 check("列表在左、正文在右", rvLeftX !== "0/0", rvLeftX);
 
-// 7 回书架点分类
-await clickText(".seg button", "书架");
+// 7 回小说书架点分类
+await clickTab("小说");
 await wait(700);
 const catN = await facetN("推理");
 const catClicked = await js(`(() => {
@@ -253,7 +274,7 @@ const topClicked = await js(`(() => {
 await wait(1000);
 t = await totalText();
 check("大分类「题材」的计数与筛选结果一致", topClicked && topN > 0 && t.includes("共 " + topN + " 本"), "分面 " + topN + "，列表 " + t.slice(0, 18));
-await js(`document.querySelectorAll('.chip.on').forEach(e => e.click())`);
+await js(`document.querySelectorAll('.chip.on:not(.preset)').forEach(e => e.click())`);
 await wait(800);
 
 // 8 系列分面。点左栏第一个系列，数量与那条分面对得上就算过，不针对某个系列
@@ -274,7 +295,7 @@ check("点系列分面筛出的数量与分面一致", serClicked && serN > 0 &&
 /* 写操作会改库，跑之前请用副本库启动：LIBRARY_DB=data/smoke.db */
 
 // 9 右键菜单
-await js(`document.querySelectorAll('.chip.on').forEach(e => e.click())`);
+await js(`document.querySelectorAll('.chip.on:not(.preset)').forEach(e => e.click())`);
 await wait(800);
 const beforeTotal = Number((await totalText()).match(/共 (\d+) 本/)?.[1] || 0);
 const ctxOpened = await js(`(() => {
@@ -464,7 +485,7 @@ if (!orphanRight) {
   const rdir = path.join(path.dirname(libDb), "reviews");
   fs.writeFileSync(path.join(rdir, "未匹配-《这本不存在》.md"), "冒烟用的未匹配书评", "utf8");
   await wait(3000);
-  await clickText(".seg button", "书架");
+  await clickTab("小说");
   await wait(600);
   await clickText(".seg button", "书评");
   await wait(1000);
@@ -489,7 +510,7 @@ check(
 );
 
 // 19 排序圆片：加一个条件，工具栏上多一片
-await clickText(".seg button", "书架");
+await clickTab("小说");
 await wait(700);
 const sortsBefore = await js("document.querySelectorAll('.chip.sort').length");
 await js("document.querySelector('.sort-add .mini').click()");
@@ -500,7 +521,7 @@ const sortsAfter = await js("document.querySelectorAll('.chip.sort').length");
 check("能追加排序条件", sortsAfter === sortsBefore + 1, sortsBefore + " → " + sortsAfter);
 
 // 20 列设置：隐藏作者列
-await clickText(".seg button", "表格");
+await clickTab("全部");
 await wait(800);
 const thBefore = await js("document.querySelectorAll('.table thead th').length");
 await js(`[...document.querySelectorAll('.toolbar .mini')].find(b => b.textContent.startsWith('列设置')).click()`);
@@ -535,7 +556,7 @@ await js("document.querySelector('.tpanel .xbtn').click()");
 await wait(300);
 
 // 22 系列视图：两档媒介、系列卡、弹层书目与两个动作
-await clickText(".seg button", "系列小说");
+await clickTab("系列小说");
 await wait(1200);
 const scards = await js("document.querySelectorAll('.scard').length");
 check("系列小说列出系列卡", scards > 0, scards + " 个");
@@ -543,10 +564,13 @@ await js("document.querySelector('.scard').click()");
 await wait(900);
 const sbItems = await js("document.querySelectorAll('.sb-list .sb-i').length");
 const sbBtns = await js("[...document.querySelectorAll('.sb-foot .mini')].map(b => b.textContent).join('|')");
-check("系列弹层列出书目并给两个动作", sbItems > 0 && sbBtns.includes("系列书评") && sbBtns.includes("只看本系列"), sbItems + " 册 / " + sbBtns);
-await js(`(() => { const d = [...document.querySelectorAll('.drawer')].find(x => x.querySelector('.sb-foot')); if (d) d.querySelector('.xbtn').click(); })()`);
+check("系列弹层列出书目并给两个动作", sbItems > 0 && sbBtns.includes("系列书评") && sbBtns.includes("在表格中查看"), sbItems + " 册 / " + sbBtns);
+await clickText(".sb-foot .mini", "在表格中查看");
 await wait(500);
-await clickText(".seg button", "全部");
+check("在表格中查看会切到全部并筛选该系列", /共\s+\d+\s+本/.test(await totalText()) &&
+  numOf(await totalText()) === sbItems &&
+  await js("document.querySelector('.vt-tab.fixed.on') !== null"));
+await js(`document.querySelectorAll('.chip.on:not(.preset)').forEach(e => e.click())`);
 await wait(700);
 
 // 23 主题：更多菜单里切浅色再切回
@@ -562,7 +586,7 @@ await js(`[...document.querySelectorAll('.ctx-i')].find(e => e.textContent.inclu
 await wait(500);
 
 // 24 多选与批量创建副本
-await clickText(".seg button", "书架");
+await clickTab("小说");
 await wait(800);
 const beforeMulti = Number((await totalText()).match(/共 (\d+) 本/)?.[1] || 0);
 await js(`(() => {

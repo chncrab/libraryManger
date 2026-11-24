@@ -104,6 +104,17 @@ const clickText = (sel, text) =>
       text
     )}); if (!el) return false; el.click(); return true; })()`
   );
+/* 书库标签栏：表格与书架都是标签，不再走顶栏 .seg */
+const clickTab = (name) =>
+  js(
+    `(() => {
+      const tab = [...document.querySelectorAll('.viewtabs .vt-tab')]
+        .find(t => ((t.querySelector('.vt-name') || {}).textContent || '').trim() === ${JSON.stringify(name)});
+      if (!tab) return false;
+      tab.click();
+      return true;
+    })()`
+  );
 /* 受控输入框要靠原生 setter 赋值，直接改 value 不会触发 React 的 onChange */
 const setInput = (sel, text) =>
   js(`(() => {
@@ -195,7 +206,7 @@ await js("document.querySelector('.cad-h .xbtn').click()");
 await wait(500);
 
 /* ---- 表格出列 ---- */
-await clickText(".seg button", "表格");
+await clickTab("全部");
 await wait(1200);
 const headHas = await js(
   `[...document.querySelectorAll('.table thead th')].some(e => (e.textContent||'').trim() === ${JSON.stringify(LABEL)})`

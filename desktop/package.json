@@ -1,6 +1,6 @@
 {
   "name": "booklib",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "私人藏书管理",
@@ -19,6 +19,7 @@
     "smoke:cover": "node scripts/smoke-cover.mjs",
     "smoke:series": "node scripts/smoke-series.mjs",
     "smoke:read": "node scripts/smoke-read.mjs",
+    "smoke:views": "node scripts/smoke-views.mjs",
     "test:scale": "node scripts/test-scale.mjs",
     "dist": "npm run build && node scripts/clean-dist-log.mjs && node node_modules/electron-builder/cli.js --win nsis zip",
     "dist:dir": "npm run build && node scripts/clean-dist-log.mjs && node node_modules/electron-builder/cli.js --dir"

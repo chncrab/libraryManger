@@ -50,6 +50,7 @@ import {
 } from "./services/coverFetch";
 import type { Http } from "./services/coverFetch";
 import { getSetting, setSetting } from "./services/settingsService";
+import { readViews, saveViews } from "./services/viewService";
 import { backupReviewLibrary, autoBackupWithReviews, listReviewBackups, isReviewSnapshot, restoreReviewLibrary } from "./services/reviewBackup";
 import { reconcileReviewFiles } from "./services/reviewFiles";
 import { ReviewRuntime } from "./services/reviewRuntime";
@@ -65,7 +66,7 @@ import {
   copyLibrary
 } from "./services/libraryService";
 import type { LibraryPaths } from "./services/libraryService";
-import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch, SeriesPatch } from "../shared/types";
+import type { BookPatch, BookQuery, FieldInput, FieldPatch, FieldType, ReviewInput, ReviewPatch, SeriesPatch, SeriesQuery } from "../shared/types";
 import type { CoverBatchState, CoverCandidate } from "../shared/types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "";
@@ -873,7 +874,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("books:facets", (_e, media?: string) => facets(D(), media || ""));
   ipcMain.handle("series:avg", (_e, id: number) => seriesAvg(D(), id));
-  ipcMain.handle("series:list", (_e, mediaType?: string) => listSeries(D(), mediaType || ""));
+  ipcMain.handle("series:list", (_e, query?: string | SeriesQuery) => listSeries(D(), query || ""));
   ipcMain.handle("series:books", (_e, id: number) => seriesBooks(D(), id));
   ipcMain.handle("series:review", (_e, id: number) => {
     try {
@@ -1476,6 +1477,14 @@ function registerIpc(): void {
   ipcMain.handle("settings:set", (_e, key: string, value: string) => {
     setSetting(D(), key, value);
     return true;
+  });
+  ipcMain.handle("views:list", () => readViews(D()));
+  /* 切书库的空当里界面可能还捏着上一库的视图：带了 expectedRoot 就只认当前库 */
+  ipcMain.handle("views:save", (_e, views: unknown, expectedRoot?: string) => {
+    if (expectedRoot && (!lib || expectedRoot !== lib.root)) {
+      return { ok: false, msg: "书库已经切换，这次的视图没有保存" };
+    }
+    return saveViews(D(), views);
   });
 
   ipcMain.handle("data:info", () => {

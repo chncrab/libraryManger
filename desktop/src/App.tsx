@@ -14,33 +14,61 @@ import Confirm from "./components/Confirm";
 import SortBar, { DEFAULT_SORTS, normalizeSorts } from "./components/SortBar";
 import { ColumnPanel, AdvPanel } from "./components/ToolPanels";
 import SeriesGrid from "./components/SeriesGrid";
+import SeriesTable from "./components/SeriesTable";
 import SeriesPanel from "./components/SeriesPanel";
+import ViewTabs from "./components/ViewTabs";
+import ViewEditor from "./components/ViewEditor";
 import LibraryGate from "./components/LibraryGate";
 import { copyText } from "./clip";
 import { loadJson, loadStr, saveJson, saveStr } from "./store";
 import { DEFAULT_HIDDEN, sortablesOf } from "./columns";
-import { EMPTY_ADV } from "../shared/types";
+import { EMPTY_ADV, EMPTY_VIEW_FILTER, FIXED_VIEW_ID } from "../shared/types";
+import { loadViews, saveViews } from "./viewBridge";
 import type {
   AdvFilter,
   AppInfo,
   BookPatch,
+  BookQuery,
   BookRow,
   CatNode,
   Facets,
   FieldDef,
+  LibraryView,
   ReviewRow,
   SeriesInfo,
+  SeriesQuery,
   SortSpec
 } from "../shared/types";
 
-type View = "grid" | "table" | "review" | "read";
+type Page = "library" | "review" | "read";
 
 const PAGE = 120;
-const STATES = ["实体", "私印", "预定中", "购物车", "无"];
-const MEDIA = ["全部", "小说", "漫画", "系列小说", "系列漫画"];
 
-const baseMedia = (m: string): string => (m === "系列小说" ? "小说" : m === "系列漫画" ? "漫画" : m);
-const isSeries = (m: string): boolean => m.startsWith("系列");
+/** 「全部」不存配置，界面按固定规则造一份 */
+const ALL_VIEW: LibraryView = {
+  id: FIXED_VIEW_ID,
+  name: "全部",
+  unit: "book",
+  layout: "table",
+  filter: { ...EMPTY_VIEW_FILTER },
+  ord: -1
+};
+
+interface TempState {
+  q: string;
+  qNow: string;
+  filter: FilterState;
+  adv: AdvFilter;
+}
+
+const makeTemp = (): TempState => ({
+  q: "",
+  qNow: "",
+  filter: { ...EMPTY_FILTER },
+  adv: { ...EMPTY_ADV, fvals: [] }
+});
+
+const EMPTY_TEMP = makeTemp();
 
 type SerSort = "n" | "name" | "rating" | "updated";
 
@@ -54,18 +82,21 @@ interface CtxState {
 export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [dinfo, setDinfo] = useState<{ dir: string; covers: number; books: number; reviews: number } | null>(null);
-  const [facets, setFacets] = useState<Facets | null>(null);
+  const [scopedFacets, setScopedFacets] = useState<{ media: string; value: Facets } | null>(null);
   const [rows, setRows] = useState<BookRow[]>([]);
   const [total, setTotal] = useState(0);
+  /* rows 属于哪个查询 key。key 一变就先不画旧数据，等新请求回来再换 */
+  const [rowsKey, setRowsKey] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [q, setQ] = useState("");
-  const [qNow, setQNow] = useState("");
-  const [media, setMedia] = useState(() => loadStr("media", "全部"));
-  const [view, setView] = useState<View>(() => (loadStr("view", "grid") as View) || "grid");
+  const [page, setPage] = useState<Page>("library");
+  const [views, setViews] = useState<LibraryView[]>([]);
+  const [viewsLoaded, setViewsLoaded] = useState(false);
+  const [viewId, setViewId] = useState(FIXED_VIEW_ID);
+
+  const [temps, setTemps] = useState<Record<string, TempState>>({});
+
   const [sorts, setSorts] = useState<SortSpec[]>(() => normalizeSorts(loadJson<unknown>("sorts", DEFAULT_SORTS)));
-  const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
-  const [adv, setAdv] = useState<AdvFilter>(() => ({ ...EMPTY_ADV, ...loadJson<Partial<AdvFilter>>("adv", {}) }));
   const [hidden, setHidden] = useState<string[]>(() => loadJson<string[]>("cols", DEFAULT_HIDDEN));
   const [theme, setTheme] = useState(() => loadStr("theme", "dark"));
 
@@ -84,11 +115,14 @@ export default function App() {
   /* 字段定义：表格列、详情行、排序键、筛选控件全从它来 */
   const [fields, setFields] = useState<FieldDef[]>([]);
 
-  const [seriesList, setSeriesList] = useState<SeriesInfo[]>([]);
+  const [seriesRows, setSeriesRows] = useState<SeriesInfo[]>([]);
+  const [seriesRowsKey, setSeriesRowsKey] = useState("");
+  const [seriesLoading, setSeriesLoading] = useState(false);
   const [serSort, setSerSort] = useState<SerSort>(() => (loadStr("serSort", "n") as SerSort) || "n");
   const [serPanel, setSerPanel] = useState<SeriesInfo | null>(null);
 
   const [ctx, setCtx] = useState<CtxState | null>(null);
+  const [vctx, setVctx] = useState<{ x: number; y: number; view: LibraryView } | null>(null);
   const [more, setMore] = useState<{ x: number; y: number } | null>(null);
   const [cadmin, setCadmin] = useState(false);
   const [fadmin, setFadmin] = useState(false);
@@ -96,6 +130,9 @@ export default function App() {
   const [colOpen, setColOpen] = useState(false);
   const [advOpen, setAdvOpen] = useState(false);
   const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
+
+  const [editor, setEditor] = useState<{ view: LibraryView | null } | null>(null);
+  const [delView, setDelView] = useState<LibraryView | null>(null);
 
   /* 浮层挂在触发按钮正下方，按钮在哪它就在哪 */
   const anchor = (e: React.MouseEvent) => {
@@ -116,13 +153,38 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
   const loadingRef = useRef(false);
+  const bookSeq = useRef(0);
+  const seriesSeq = useRef(0);
+  const lastBookKey = useRef("");
+  const keep = useRef({ top: 0, count: 0 });
+
+  const viewsRef = useRef<LibraryView[]>([]);
+  const viewIdRef = useRef(viewId);
+  useEffect(() => {
+    viewIdRef.current = viewId;
+  }, [viewId]);
 
   const say = (t: string) => {
     setToast(t);
     window.setTimeout(() => setToast(""), 2200);
   };
 
-  const seriesMode = isSeries(media);
+  const putViews = useCallback((list: LibraryView[]) => {
+    viewsRef.current = list;
+    setViews(list);
+  }, []);
+
+  const currentView = useMemo(() => {
+    if (viewId === FIXED_VIEW_ID) return ALL_VIEW;
+    return views.find((v) => v.id === viewId) || ALL_VIEW;
+  }, [views, viewId]);
+  const unit = currentView.unit;
+  const layout = currentView.layout;
+  const viewMedia = currentView.filter.media;
+
+  const temp = temps[viewId] ?? EMPTY_TEMP;
+  const facetMedia = viewMedia || temp.filter.media;
+  const facets = scopedFacets?.media === facetMedia ? scopedFacets.value : null;
   const sortables = useMemo(() => sortablesOf(fields), [fields]);
 
   useEffect(() => {
@@ -130,48 +192,89 @@ export default function App() {
   }, [tick]);
 
   useEffect(() => {
+    if (!info?.hasLibrary) return;
     api.dataInfo().then(setDinfo);
-  }, [tick]);
+  }, [tick, info?.hasLibrary]);
 
   /* 任何写操作之后把书评清单也重拉一遍，删掉的那篇不该还留在左栏 */
   const reloadReviews = useCallback(() => api.reviews().then(setReviews), []);
   useEffect(() => {
-    if (view === "review") reloadReviews();
-  }, [view, tick, reloadReviews]);
+    if (!info?.hasLibrary || page !== "review") return;
+    reloadReviews();
+  }, [page, tick, reloadReviews, info?.hasLibrary]);
 
   useEffect(() => {
-    api.facets(baseMedia(media)).then(setFacets);
-  }, [media, tick]);
+    if (!info?.hasLibrary || page !== "library") return;
+    let alive = true;
+    api.facets(facetMedia).then((value) => {
+      if (alive) setScopedFacets({ media: facetMedia, value });
+    }).catch(() => {
+      if (alive) setScopedFacets(null);
+    });
+    return () => { alive = false; };
+  }, [facetMedia, tick, page, info?.hasLibrary]);
 
+  /* 表格里的分类多选要用整棵树，分类管理改完也要跟着变。
+     新建视图的编辑器在书评页也能打开，所以这里只按库门禁，不按页面 */
   useEffect(() => {
-    api.seriesList(baseMedia(media)).then(setSeriesList);
-  }, [media, tick]);
-
-  /* 表格里的分类多选要用整棵树，分类管理改完也要跟着变 */
-  useEffect(() => {
+    if (!info?.hasLibrary) return;
     api.categoryTree().then(setCats);
-  }, [tick]);
+  }, [tick, info?.hasLibrary]);
 
   useEffect(() => {
+    if (!info?.hasLibrary || page !== "library") return;
     api.listFields().then(setFields);
-  }, [tick]);
+  }, [tick, page, info?.hasLibrary]);
 
   useEffect(() => {
+    if (!info?.hasLibrary || page !== "review") return;
     api.reviewDirInfo().then(setDirInfo);
-  }, [tick]);
+  }, [tick, page, info?.hasLibrary]);
 
   /* 在书库的 reviews 文件夹里改了 md，主进程同步完会喊一声，界面这边重取 */
   useEffect(() => api.onReviewsChanged(() => setTick((t) => t + 1)), []);
 
+  /* 视图配置按库读一次。空列表就是用户删空了，不补预设 */
   useEffect(() => {
-    const t = setTimeout(() => setQNow(q.trim()), 220);
-    return () => clearTimeout(t);
-  }, [q]);
+    if (!info?.hasLibrary || !info.libraryRoot) return;
+    let alive = true;
+    loadViews()
+      .then((r) => {
+        if (!alive) return;
+        putViews(r.views);
+        if (r.msg) say(r.msg);
+      })
+      .finally(() => {
+        if (alive) setViewsLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [info?.hasLibrary, info?.libraryRoot, putViews]);
 
-  useEffect(() => saveStr("media", media), [media]);
-  useEffect(() => saveStr("view", view), [view]);
+  /* 当前标签在配置里没了（坏数据或别处删掉）就回「全部」 */
+  useEffect(() => {
+    if (!viewsLoaded) return;
+    if (viewId !== FIXED_VIEW_ID && !views.some((v) => v.id === viewId)) setViewId(FIXED_VIEW_ID);
+  }, [viewsLoaded, views, viewId]);
+
+  /* 输入框停顿一下再查，避免一个字一个请求 */
+  useEffect(() => {
+    const id = viewId;
+    const t = window.setTimeout(() => {
+      setTemps((prev) => {
+        const cur = prev[id];
+        if (!cur) return prev;
+        const qNow = cur.q.trim();
+        if (cur.qNow === qNow) return prev;
+        return { ...prev, [id]: { ...cur, qNow } };
+      });
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [temp.q, viewId]);
+
   useEffect(() => saveJson("sorts", sorts), [sorts]);
-  useEffect(() => saveJson("adv", adv), [adv]);
   useEffect(() => saveJson("cols", hidden), [hidden]);
   useEffect(() => saveStr("serSort", serSort), [serSort]);
   useEffect(() => {
@@ -179,77 +282,185 @@ export default function App() {
     saveStr("theme", theme);
   }, [theme]);
 
-  const query = useCallback(
-    (offset: number) => ({
-      q: qNow,
-      media: baseMedia(media),
+  const setTemp = (p: Partial<TempState>) => {
+    const id = viewId;
+    setTemps((prev) => ({ ...prev, [id]: { ...(prev[id] || makeTemp()), ...p } }));
+  };
+
+  const patch = (p: Partial<FilterState>) => {
+    const id = viewId;
+    setTemps((prev) => {
+      const cur = prev[id] || makeTemp();
+      const filter = { ...cur.filter, ...p };
+      if (filter.media !== cur.filter.media) filter.seriesId = null;
+      return { ...prev, [id]: { ...cur, filter } };
+    });
+  };
+
+  const setAdv = (a: AdvFilter) => setTemp({ adv: a });
+
+  const clearTemp = () => setTemps((prev) => ({ ...prev, [viewId]: makeTemp() }));
+
+  const presetKey = JSON.stringify(currentView.filter);
+  const tempKey = JSON.stringify({ q: temp.qNow, filter: temp.filter, adv: temp.adv });
+  const bookKey = page + "|" + viewId + "|" + unit + "|" + presetKey + "|" + tempKey + "|" + JSON.stringify(sorts);
+  const seriesKey = page + "|" + viewId + "|" + unit + "|" + presetKey + "|" + tempKey;
+
+  /* 旧 key 的 rows/total 一律不画，避免切视图后的那一帧还挂着上一批书 */
+  const shownRows = rowsKey === bookKey ? rows : [];
+  const shownTotal = rowsKey === bookKey ? total : 0;
+
+  const buildBookQuery = (offset: number, limit: number): BookQuery => {
+    const preset = currentView.filter;
+    return {
+      q: temp.qNow || undefined,
+      presetQ: preset.keywords.join(" ").trim() || undefined,
+      media: preset.media || temp.filter.media || undefined,
+      presetRead: preset.read !== "all" ? preset.read : undefined,
+      presetCategories: preset.categories.length ? preset.categories : undefined,
+      read: temp.filter.read !== "all" ? temp.filter.read : undefined,
+      noCover: temp.filter.noCover,
+      categories: temp.filter.categories.length ? temp.filter.categories : undefined,
+      states: temp.filter.states.length ? temp.filter.states : undefined,
+      ebook: temp.filter.ebook.length ? temp.filter.ebook : undefined,
+      decades: temp.filter.decades.length ? temp.filter.decades : undefined,
+      seriesId: temp.filter.seriesId,
       sorts,
-      read: filter.read,
-      noCover: filter.noCover,
-      categories: filter.categories,
-      states: filter.states,
-      ebook: filter.ebook,
-      decades: filter.decades,
-      seriesId: filter.seriesId,
-      adv,
-      fvals: adv.fvals || [],
-      offset,
-      limit: PAGE
-    }),
-    [qNow, media, sorts, filter, adv]
-  );
+      adv: temp.adv,
+      fvals: temp.adv.fvals || [],
+      offset: offset || undefined,
+      limit
+    };
+  };
 
-  /* 改一个字段就整表重取，滚动位置与已加载页数要留着重放，否则表格会跳回顶部 */
-  const qKey = qNow + "|" + media + "|" + JSON.stringify(sorts) + "|" + JSON.stringify(filter) + "|" + JSON.stringify(adv);
-  const lastKey = useRef("");
-  const keep = useRef({ top: 0, count: 0 });
+  const buildSeriesQuery = (): SeriesQuery => {
+    const preset = currentView.filter;
+    return {
+      q: temp.qNow || undefined,
+      presetQ: preset.keywords.join(" ").trim() || undefined,
+      media: preset.media || temp.filter.media || undefined,
+      presetCategories: preset.categories.length ? preset.categories : undefined,
+      categories: temp.filter.categories.length ? temp.filter.categories : undefined,
+      presetRead: preset.read !== "all" ? preset.read : undefined,
+      read: temp.filter.read !== "all" ? temp.filter.read : undefined,
+      states: temp.filter.states.length ? temp.filter.states : undefined,
+      ebook: temp.filter.ebook.length ? temp.filter.ebook : undefined,
+      decades: temp.filter.decades.length ? temp.filter.decades : undefined,
+      adv: temp.adv,
+      fvals: temp.adv.fvals || []
+    };
+  };
 
+  /* 单册分页。请求带序号，切标签或改条件后旧结果直接丢掉 */
   useEffect(() => {
-    if (seriesMode || view === "review" || view === "read") return;
+    if (!info?.hasLibrary || page !== "library" || unit !== "book") {
+      /* 离开单册模式时把序号推一下，还在飞的分页请求回来也不会再写 rows */
+      bookSeq.current++;
+      loadingRef.current = false;
+      return;
+    }
     let alive = true;
-    const sameQuery = lastKey.current === qKey;
+    let raf = 0;
+    const seq = ++bookSeq.current;
+    const sameQuery = lastBookKey.current === bookKey;
     if (!sameQuery) {
       keep.current = { top: 0, count: 0 };
-      lastKey.current = qKey;
+      lastBookKey.current = bookKey;
+      /* 换标签或换条件时先把旧结果撤掉，免得新请求回来前还挂着上一批书 */
+      setRows([]);
+      setTotal(0);
+      offsetRef.current = 0;
     }
     setLoading(true);
     loadingRef.current = true;
     const want = Math.max(PAGE, sameQuery ? keep.current.count : 0);
     api
-      .listBooks({ ...query(0), limit: want })
+      .listBooks(buildBookQuery(0, want))
       .then((r) => {
-        if (!alive) return;
+        if (!alive || seq !== bookSeq.current) return;
+        setRowsKey(bookKey);
         setRows(r.rows);
         setTotal(r.total);
         offsetRef.current = r.rows.length;
         keep.current.count = r.rows.length;
         const top = sameQuery ? keep.current.top : 0;
-        requestAnimationFrame(() => {
+        raf = requestAnimationFrame(() => {
+          if (seq !== bookSeq.current) return;
           if (scrollRef.current) scrollRef.current.scrollTop = top;
         });
       })
+      .catch(() => {
+        if (!alive || seq !== bookSeq.current) return;
+        setRowsKey(bookKey);
+        setRows([]);
+        setTotal(0);
+      })
       .finally(() => {
-        if (!alive) return;
+        if (!alive || seq !== bookSeq.current) return;
         setLoading(false);
         loadingRef.current = false;
       });
     return () => {
       alive = false;
+      if (raf) cancelAnimationFrame(raf);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qKey, tick, seriesMode, view]);
+  }, [bookKey, tick, info?.hasLibrary]);
+
+  /* 系列不分页，一次取回后在内存里排 */
+  useEffect(() => {
+    if (!info?.hasLibrary || page !== "library" || unit !== "series") {
+      /* 离开系列模式同样让旧请求失效 */
+      seriesSeq.current++;
+      setSeriesLoading(false);
+      return;
+    }
+    let alive = true;
+    const seq = ++seriesSeq.current;
+    setSeriesLoading(true);
+    api
+      .seriesList(buildSeriesQuery())
+      .then((list) => {
+        if (!alive || seq !== seriesSeq.current) return;
+        setSeriesRowsKey(seriesKey);
+        setSeriesRows(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!alive || seq !== seriesSeq.current) return;
+        setSeriesRowsKey(seriesKey);
+        setSeriesRows([]);
+      })
+      .finally(() => {
+        if (!alive || seq !== seriesSeq.current) return;
+        setSeriesLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seriesKey, tick, info?.hasLibrary]);
 
   const loadMore = useCallback(() => {
-    if (loadingRef.current) return;
+    if (page !== "library" || unit !== "book" || loadingRef.current) return;
+    /* 新 key 的查询还没落地时不要拿旧偏移去续页 */
+    if (lastBookKey.current !== bookKey) return;
     if (!total || offsetRef.current >= total) return;
     loadingRef.current = true;
-    api.listBooks(query(offsetRef.current)).then((r) => {
-      setRows((prev) => [...prev, ...r.rows]);
-      offsetRef.current += r.rows.length;
-      keep.current.count = offsetRef.current;
-      loadingRef.current = false;
-    });
-  }, [query, total]);
+    const seq = bookSeq.current;
+    api
+      .listBooks(buildBookQuery(offsetRef.current, PAGE))
+      .then((r) => {
+        if (seq !== bookSeq.current || lastBookKey.current !== bookKey) return;
+        setRows((prev) => [...prev, ...r.rows]);
+        offsetRef.current += r.rows.length;
+        keep.current.count = offsetRef.current;
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (seq === bookSeq.current) loadingRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, unit, total, temp, currentView, sorts]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -258,16 +469,25 @@ export default function App() {
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) loadMore();
   };
 
+  /* 书评、阅读页不留书库详情，回到书库时保留点开的那本 */
   useEffect(() => {
-    if (view === "review" || view === "read") setPicked([]);
-  }, [view]);
+    if (page !== "library") setPicked([]);
+  }, [page]);
 
-  /* 全局快捷键：/ 搜书，Ctrl 1/2/3 切视图，Ctrl Shift L 换主题，Esc 收面板 */
+  const selectView = (id: string) => {
+    setPage("library");
+    setViewId(id);
+    setSerPanel(null);
+    setColOpen(false);
+    setAdvOpen(false);
+  };
+
+  /* 全局快捷键：/ 搜书，Ctrl 1 第一个自定义书架，Ctrl 2 全部，Ctrl 3 书评，Ctrl 4 阅读 */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const typing = !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
-      if (e.key === "/" && !typing) {
+      if (e.key === "/" && !typing && page === "library") {
         e.preventDefault();
         searchRef.current?.focus();
         return;
@@ -276,6 +496,7 @@ export default function App() {
         setColOpen(false);
         setAdvOpen(false);
         setMore(null);
+        setVctx(null);
         setSerPanel(null);
         return;
       }
@@ -284,33 +505,34 @@ export default function App() {
         setTheme((x) => (x === "dark" ? "light" : "dark"));
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && ["1", "2", "3", "4"].includes(e.key)) {
-        e.preventDefault();
-        const v = (["grid", "table", "review", "read"] as View[])[Number(e.key) - 1];
-        setMedia((m) => (isSeries(m) ? "全部" : m));
-        setView(v);
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        if (e.key === "1") {
+          e.preventDefault();
+          const first = views.find((v) => v.layout === "shelf");
+          selectView(first ? first.id : FIXED_VIEW_ID);
+          return;
+        }
+        if (e.key === "2") {
+          e.preventDefault();
+          selectView(FIXED_VIEW_ID);
+          return;
+        }
+        if (e.key === "3") {
+          e.preventDefault();
+          setPage("review");
+          return;
+        }
+        if (e.key === "4") {
+          e.preventDefault();
+          setPage("read");
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  const patch = (p: Partial<FilterState>) => setFilter((f) => ({ ...f, ...p }));
-
-  const switchMedia = (m: string) => {
-    setMedia(m);
-    /* 系列是按媒介分的，换媒介时旧系列的筛选留着只会筛出空列表 */
-    setFilter((f) => ({ ...f, seriesId: null }));
-    setSerPanel(null);
-  };
-
-  /* 系列模式里点任意一个单本视图按钮，就退回全部藏书 */
-  const exitSeriesMode = () => {
-    if (isSeries(media)) {
-      setMedia("全部");
-      setSerPanel(null);
-    }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, views]);
 
   const openCtx = (e: React.MouseEvent, b: BookRow) => {
     e.preventDefault();
@@ -412,15 +634,124 @@ export default function App() {
       id = r.id;
     }
     bump();
-    exitSeriesMode();
-    setView("review");
+    setSerPanel(null);
+    setPage("review");
     setReviewFocus("series:" + id);
   };
 
+  /* 从系列详情进「全部」，只保留该系列的临时条件 */
   const onlySeries = (s: SeriesInfo) => {
-    exitSeriesMode();
-    setView("table");
-    patch({ seriesId: s.id });
+    setPage("library");
+    setViewId(FIXED_VIEW_ID);
+    setTemps((prev) => ({
+      ...prev,
+      [FIXED_VIEW_ID]: {
+        q: "",
+        qNow: "",
+        filter: { ...EMPTY_FILTER, seriesId: s.id },
+        adv: { ...EMPTY_ADV, fvals: [] }
+      }
+    }));
+    setSerPanel(null);
+    setPicked([]);
+    setColOpen(false);
+    setAdvOpen(false);
+  };
+
+  /* 视图配置整排保存。串行排队，连续操作不会拿旧数组覆盖新数组 */
+  const saveChain = useRef<Promise<void>>(Promise.resolve());
+  const persistViews = (
+    op: (cur: LibraryView[]) => LibraryView[] | null,
+    onSaved?: (saved: LibraryView[]) => void
+  ): Promise<{ ok: boolean; msg?: string }> => {
+    const task = saveChain.current.then(async () => {
+      const next = op(viewsRef.current);
+      if (!next) return { ok: true };
+      const r = await saveViews(next, info?.libraryRoot || undefined);
+      if (!r.ok) return { ok: false, msg: r.msg || "视图配置没有保存成功" };
+      const saved = r.views !== undefined ? r.views : next.map((v, i) => ({ ...v, ord: i }));
+      putViews(saved);
+      onSaved?.(saved);
+      return { ok: true };
+    });
+    saveChain.current = task.then(
+      () => undefined,
+      () => undefined
+    );
+    return task;
+  };
+
+  const saveView = async (v: LibraryView): Promise<string | null> => {
+    const name = v.name.trim();
+    if (!name) return "名称不能为空";
+    const clean: LibraryView = { ...v, name };
+    const isNew = !viewsRef.current.some((x) => x.id === clean.id);
+    const res = await persistViews((cur) => {
+      if (cur.some((x) => x.id === clean.id)) return cur.map((x) => (x.id === clean.id ? clean : x));
+      return [...cur, { ...clean, ord: cur.length }];
+    });
+    if (!res.ok) return res.msg || "保存失败";
+    if (isNew) {
+      /* 从书评或阅读页新建也要落到书库，并直接打开这个新标签 */
+      setPage("library");
+      setViewId(clean.id);
+    }
+    setSerPanel(null);
+    setEditor(null);
+    return null;
+  };
+
+  const confirmDeleteView = () => {
+    const target = delView;
+    setDelView(null);
+    if (!target) return;
+    /* 右邻下标在真正轮到这条队列任务时才算，避免连续操作时偏一位 */
+    let removedAt = -1;
+    void persistViews(
+      (cur) => {
+        removedAt = cur.findIndex((x) => x.id === target.id);
+        if (removedAt < 0) return null;
+        return cur.filter((x) => x.id !== target.id);
+      },
+      (saved) => {
+        /* 保存成功后才改选中：优先右邻，右侧空了选左侧，都空回「全部」 */
+        if (viewIdRef.current === target.id) {
+          const nb = removedAt >= 0 ? saved[removedAt] || saved[removedAt - 1] : saved[0];
+          setViewId(nb ? nb.id : FIXED_VIEW_ID);
+        }
+        setTemps((prev) => {
+          if (!(target.id in prev)) return prev;
+          const n = { ...prev };
+          delete n[target.id];
+          return n;
+        });
+      }
+    ).then((r) => {
+      if (!r.ok) say(r.msg || "删除视图没有保存成功");
+    });
+  };
+
+  const moveView = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    void persistViews((cur) => {
+      const from = cur.findIndex((x) => x.id === fromId);
+      const to = cur.findIndex((x) => x.id === toId);
+      if (from < 0 || to < 0) return null;
+      const next = cur.slice();
+      const [it] = next.splice(from, 1);
+      let at = next.findIndex((x) => x.id === toId);
+      if (at < 0) at = next.length;
+      else if (from < to) at += 1;
+      next.splice(at, 0, it);
+      return next;
+    }).then((r) => {
+      if (!r.ok) say(r.msg || "调整视图顺序没有保存成功");
+    });
+  };
+
+  const editCurrentView = () => {
+    if (currentView.id === FIXED_VIEW_ID) return;
+    setEditor({ view: currentView });
   };
 
   const moreMenu = (e: React.MouseEvent) => {
@@ -481,7 +812,7 @@ export default function App() {
     if (k === "about") {
       setAsk({
         text:
-          "快捷键：/ 搜索，Ctrl+1 书架，Ctrl+2 表格，Ctrl+3 书评，Ctrl+4 阅读，Ctrl+Shift+L 换主题，Esc 收面板。\n" +
+          "快捷键：/ 搜索，Ctrl+1 打开第一个书架视图，Ctrl+2 打开全部，Ctrl+3 书评，Ctrl+4 阅读，Ctrl+Shift+L 换主题，Esc 收面板。\n" +
           "书库文件夹在 " +
           (dinfo?.dir || info?.libraryRoot || "") +
           "，书、封面、书评都在里面，安装包里不含任何书目。换机器整个拷走就行。\n" +
@@ -491,54 +822,84 @@ export default function App() {
     }
   };
 
-  const chips: { label: string; clear: () => void }[] = [];
-  if (filter.read !== "all")
-    chips.push({ label: { read: "已读", unread: "未读", rated: "有评分", all: "" }[filter.read], clear: () => patch({ read: "all" }) });
-  if (filter.noCover !== null) chips.push({ label: filter.noCover ? "无封面" : "有封面", clear: () => patch({ noCover: null }) });
-  for (const c of filter.categories) chips.push({ label: c, clear: () => patch({ categories: filter.categories.filter((x) => x !== c) }) });
-  for (const s of filter.states) chips.push({ label: "实体书 " + s, clear: () => patch({ states: filter.states.filter((x) => x !== s) }) });
-  for (const e of filter.ebook) chips.push({ label: "电子书 " + e, clear: () => patch({ ebook: filter.ebook.filter((x) => x !== e) }) });
-  for (const d of filter.decades)
-    chips.push({ label: d + " 年代", clear: () => patch({ decades: filter.decades.filter((x) => x !== d) }) });
-  if (filter.seriesId) {
-    const s = facets?.series.find((x) => x.id === filter.seriesId);
-    chips.push({ label: "系列 " + (s?.name || ""), clear: () => patch({ seriesId: null }) });
+  const readLabel = (r: string) => ({ read: "已读", unread: "未读", rated: "有评分", all: "" } as Record<string, string>)[r] || "";
+
+  type Chip = { key: string; label: string; clear: () => void; preset?: boolean };
+  const chips: Chip[] = [];
+  const preset = currentView.filter;
+  if (preset.media) chips.push({ key: "p-media", label: "预设媒介 " + preset.media, preset: true, clear: editCurrentView });
+  for (const kw of preset.keywords)
+    chips.push({ key: "p-kw-" + kw, label: "预设关键词 " + kw, preset: true, clear: editCurrentView });
+  for (const c of preset.categories) chips.push({ key: "p-cat-" + c, label: "预设分类 " + c, preset: true, clear: editCurrentView });
+  if (preset.read !== "all") chips.push({ key: "p-read", label: "预设 " + readLabel(preset.read), preset: true, clear: editCurrentView });
+
+  if (!preset.media && temp.filter.media)
+    chips.push({ key: "media", label: "媒介 " + temp.filter.media, clear: () => patch({ media: "" }) });
+  if (temp.filter.read !== "all")
+    chips.push({ key: "read", label: readLabel(temp.filter.read), clear: () => patch({ read: "all" }) });
+  if (temp.filter.noCover !== null)
+    chips.push({ key: "cover", label: temp.filter.noCover ? "无封面" : "有封面", clear: () => patch({ noCover: null }) });
+  for (const c of temp.filter.categories) chips.push({ key: "cat-" + c, label: c, clear: () => patch({ categories: temp.filter.categories.filter((x) => x !== c) }) });
+  for (const s of temp.filter.states)
+    chips.push({ key: "st-" + s, label: "实体书 " + s, clear: () => patch({ states: temp.filter.states.filter((x) => x !== s) }) });
+  for (const e of temp.filter.ebook)
+    chips.push({ key: "eb-" + e, label: "电子书 " + e, clear: () => patch({ ebook: temp.filter.ebook.filter((x) => x !== e) }) });
+  for (const d of temp.filter.decades)
+    chips.push({ key: "dec-" + d, label: d + " 年代", clear: () => patch({ decades: temp.filter.decades.filter((x) => x !== d) }) });
+  if (temp.filter.seriesId) {
+    const s = facets?.series.find((x) => x.id === temp.filter.seriesId) || seriesRows.find((x) => x.id === temp.filter.seriesId);
+    chips.push({ key: "series", label: "系列 " + (s?.name || ""), clear: () => patch({ seriesId: null }) });
   }
-  if (adv.ratingMin != null) chips.push({ label: "评分 ≥ " + adv.ratingMin, clear: () => setAdv({ ...adv, ratingMin: null }) });
-  if (adv.ratingMax != null) chips.push({ label: "评分 ≤ " + adv.ratingMax, clear: () => setAdv({ ...adv, ratingMax: null }) });
-  if (adv.yearFrom != null) chips.push({ label: "出版 ≥ " + adv.yearFrom, clear: () => setAdv({ ...adv, yearFrom: null }) });
-  if (adv.yearTo != null) chips.push({ label: "出版 ≤ " + adv.yearTo, clear: () => setAdv({ ...adv, yearTo: null }) });
-  if (adv.hasReview !== null) chips.push({ label: adv.hasReview ? "有书评" : "没书评", clear: () => setAdv({ ...adv, hasReview: null }) });
-  if (adv.note.trim()) chips.push({ label: "备注含 " + adv.note.trim(), clear: () => setAdv({ ...adv, note: "" }) });
-  for (const fv of adv.fvals || []) {
+  if (temp.adv.ratingMin != null)
+    chips.push({ key: "rmin", label: "评分 ≥ " + temp.adv.ratingMin, clear: () => setAdv({ ...temp.adv, ratingMin: null }) });
+  if (temp.adv.ratingMax != null)
+    chips.push({ key: "rmax", label: "评分 ≤ " + temp.adv.ratingMax, clear: () => setAdv({ ...temp.adv, ratingMax: null }) });
+  if (temp.adv.yearFrom != null)
+    chips.push({ key: "yfrom", label: "出版 ≥ " + temp.adv.yearFrom, clear: () => setAdv({ ...temp.adv, yearFrom: null }) });
+  if (temp.adv.yearTo != null)
+    chips.push({ key: "yto", label: "出版 ≤ " + temp.adv.yearTo, clear: () => setAdv({ ...temp.adv, yearTo: null }) });
+  if (temp.adv.hasReview !== null)
+    chips.push({ key: "hasrv", label: temp.adv.hasReview ? "有书评" : "没书评", clear: () => setAdv({ ...temp.adv, hasReview: null }) });
+  if (temp.adv.note.trim())
+    chips.push({ key: "note", label: "备注含 " + temp.adv.note.trim(), clear: () => setAdv({ ...temp.adv, note: "" }) });
+  for (const fv of temp.adv.fvals || []) {
     const fd = fields.find((f) => f.key === fv.key);
-    const label = fd ? fd.label : fv.key;
     chips.push({
-      label: label + " " + (fv.op === "between" ? (fv.a || "") + " 到 " + (fv.b || "") : fv.a || ""),
-      clear: () => setAdv({ ...adv, fvals: (adv.fvals || []).filter((x) => x.key !== fv.key) })
+      key: "fv-" + fv.key,
+      label: (fd ? fd.label : fv.key) + " " + (fv.op === "between" ? (fv.a || "") + " 到 " + (fv.b || "") : fv.a || ""),
+      clear: () => setAdv({ ...temp.adv, fvals: (temp.adv.fvals || []).filter((x) => x.key !== fv.key) })
     });
   }
 
   const advCount =
-    [adv.ratingMin, adv.ratingMax, adv.yearFrom, adv.yearTo].filter((x) => x != null).length +
-    (adv.hasReview === null ? 0 : 1) +
-    (adv.note.trim() ? 1 : 0) +
-    (adv.fvals || []).length;
+    [temp.adv.ratingMin, temp.adv.ratingMax, temp.adv.yearFrom, temp.adv.yearTo].filter((x) => x != null).length +
+    (temp.adv.hasReview === null ? 0 : 1) +
+    (temp.adv.note.trim() ? 1 : 0) +
+    (temp.adv.fvals || []).length;
 
-  /* 系列模式下按名字搜、按册数或均分排，都在内存里做，系列总共一百多个 */
+  const tempDirty =
+    !!temp.q.trim() ||
+    temp.filter.media !== "" ||
+    temp.filter.read !== "all" ||
+    temp.filter.noCover !== null ||
+    temp.filter.categories.length > 0 ||
+    temp.filter.states.length > 0 ||
+    temp.filter.ebook.length > 0 ||
+    temp.filter.decades.length > 0 ||
+    temp.filter.seriesId !== null ||
+    advCount > 0;
+
+  /* 系列在内存里按册数、名字、均分或最近改动排 */
   const shownSeries = useMemo(() => {
-    const k = qNow.toLowerCase();
-    const out = seriesList.filter(
-      (s) => !k || s.label.toLowerCase().includes(k) || s.name.toLowerCase().includes(k) || s.original.toLowerCase().includes(k)
-    );
+    if (seriesRowsKey !== seriesKey) return [];
     const cmp: Record<SerSort, (a: SeriesInfo, b: SeriesInfo) => number> = {
       n: (a, b) => b.n - a.n || a.label.localeCompare(b.label, "zh"),
       name: (a, b) => a.label.localeCompare(b.label, "zh"),
       rating: (a, b) => (b.avg ?? -1) - (a.avg ?? -1) || b.n - a.n,
       updated: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))
     };
-    return out.slice().sort(cmp[serSort]);
-  }, [seriesList, qNow, serSort]);
+    return seriesRows.slice().sort(cmp[serSort]);
+  }, [seriesRows, seriesRowsKey, seriesKey, serSort]);
 
   /* 还没选书库就先把整页换成选择页，主界面一律不铺 */
   if (!info) {
@@ -552,74 +913,80 @@ export default function App() {
   }
   if (!info.hasLibrary) return <LibraryGate onOpened={() => window.location.reload()} />;
 
+  const viewCtxItems: CtxItem[] = vctx
+    ? [
+        { key: "edit", label: "编辑视图" },
+        { key: "s", label: "", sep: true },
+        { key: "del", label: "删除视图…", danger: true }
+      ]
+    : [];
+
+  const sidebar = (
+    <Sidebar
+      facets={facets}
+      filter={temp.filter}
+      presetMedia={viewMedia}
+      unit={unit}
+      onChange={patch}
+      onManageCats={() => setCadmin(true)}
+    />
+  );
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
           藏书库
           <small>
-            {info
-              ? info.bookCount + " 本 · 书评 " + info.reviewCount + " 篇" + (info.orphanCount ? " · 未匹配 " + info.orphanCount : "")
-              : ""}
+            {info.bookCount + " 本 · 书评 " + info.reviewCount + " 篇" + (info.orphanCount ? " · 未匹配 " + info.orphanCount : "")}
           </small>
         </div>
         <span className="spacer" />
-        <input
-          ref={searchRef}
-          className="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={seriesMode ? "搜系列名（/ 聚焦）" : "搜书名、作者、原名（/ 聚焦）"}
-        />
-        {view === "read" ? (
-          <span className="dim rd-scope" title="时间线只算小说，漫画没有逐本阅读记录">
-            小说
-          </span>
-        ) : (
-          <div className="seg">
-            {MEDIA.map((m) => (
-              <button key={m} className={media === m ? "on" : ""} onClick={() => switchMedia(m)}>
-                {m}
-              </button>
-            ))}
-          </div>
-        )}
+        {page === "library" ? (
+          <input
+            ref={searchRef}
+            className="search"
+            value={temp.q}
+            onChange={(e) => setTemp({ q: e.target.value })}
+            placeholder={unit === "series" ? "搜系列名、原名（/ 聚焦）" : "搜书名、作者、原名（/ 聚焦）"}
+          />
+        ) : null}
         <div className="seg">
-          {(
-            [
-              ["grid", "书架"],
-              ["table", "表格"],
-              ["review", "书评"],
-              ["read", "阅读"]
-            ] as const
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              className={view === k && !seriesMode ? "on" : ""}
-              onClick={() => {
-                exitSeriesMode();
-                setView(k);
-              }}
-            >
-              {label}
-            </button>
-          ))}
+          <button className={page === "review" ? "on" : ""} onClick={() => setPage("review")}>
+            书评
+          </button>
+          <button className={page === "read" ? "on" : ""} onClick={() => setPage("read")}>
+            阅读
+          </button>
         </div>
         <button className="mini" onClick={moreMenu} title="备份、恢复、主题">
           更多 ▾
         </button>
       </header>
 
+      <ViewTabs
+        views={views}
+        currentId={viewId}
+        active={page === "library"}
+        onSelect={selectView}
+        onAdd={() => setEditor({ view: null })}
+        onMenu={(e, v) => setVctx({ x: e.clientX, y: e.clientY, view: v })}
+        onDelete={(v) => setDelView(v)}
+        onMove={moveView}
+        addDisabled={!viewsLoaded}
+      />
+
       <div className="body">
-        {view === "read" ? (
+        {page === "read" ? (
           <ReadView ver={tick} onPick={(id) => pickBook(id)} />
-        ) : view === "review" ? (
+        ) : page === "review" ? (
           <ReviewLib
             reviews={reviews}
             focusKey={reviewFocus}
             onFocusDone={() => setReviewFocus(null)}
             onGoto={(id) => {
-              setView("grid");
+              setPage("library");
+              setViewId(FIXED_VIEW_ID);
               pickBook(id);
             }}
             onChanged={bump}
@@ -627,40 +994,76 @@ export default function App() {
             dirInfo={dirInfo}
             onRefreshDir={() => api.reviewDirInfo().then(setDirInfo)}
           />
-        ) : seriesMode ? (
-          <div className="main">
-            <div className="toolbar">
-              <span>共 {shownSeries.length} 个系列</span>
-              <select value={serSort} onChange={(e) => setSerSort(e.target.value as SerSort)}>
-                <option value="n">按册数</option>
-                <option value="name">按系列名</option>
-                <option value="rating">按均分</option>
-                <option value="updated">按最近改动</option>
-              </select>
-              <span className="dim">点一格看系列里的每本书，可写系列总评</span>
-              <span className="spacer" />
-              <button className="mini xs" onClick={() => switchMedia("全部")}>
-                退出系列视图
-              </button>
-            </div>
-            <div className="scroll">
-              <SeriesGrid list={shownSeries} onOpen={setSerPanel} />
-            </div>
-          </div>
-        ) : (
+        ) : unit === "series" ? (
           <>
-            <Sidebar facets={facets} filter={filter} onChange={patch} onManageCats={() => setCadmin(true)} />
-
+            {sidebar}
             <div className="main">
               <div className="toolbar">
-                <span>共 {total} 本</span>
+                <span>共 {shownSeries.length} 个系列</span>
+                <select value={serSort} onChange={(e) => setSerSort(e.target.value as SerSort)}>
+                  <option value="n">按册数</option>
+                  <option value="name">按系列名</option>
+                  <option value="rating">按均分</option>
+                  <option value="updated">按最近改动</option>
+                </select>
+                <span className="dim">点一行或一格看系列详情，可写系列总评</span>
+                <button
+                  className={"mini xs" + (advCount ? " on" : "")}
+                  onClick={(e) => {
+                    anchor(e);
+                    setAdvOpen(!advOpen);
+                  }}
+                  title="评分、出版年、有没有书评"
+                >
+                  高级筛选{advCount ? "（" + advCount + "）" : ""}
+                </button>
+                <div className="chips">
+                  {chips.map((c) => (
+                    <span
+                      key={c.key}
+                      className={"chip on" + (c.preset ? " preset" : "")}
+                      onClick={c.clear}
+                      title={c.preset ? "点一下编辑视图的预设" : "点掉这个条件"}
+                    >
+                      {c.label} ×
+                    </span>
+                  ))}
+                </div>
+                <span className="spacer" />
+                {tempDirty ? (
+                  <button className="mini xs" onClick={clearTemp} title="清空临时条件，回到视图预筛选">
+                    清除临时条件
+                  </button>
+                ) : null}
+                {seriesLoading ? <span>读取中…</span> : null}
+              </div>
+
+              {advOpen ? (
+                <AdvPanel adv={temp.adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
+              ) : null}
+
+              <div className="scroll">
+                {layout === "table" ? (
+                  <SeriesTable list={shownSeries} onOpen={setSerPanel} />
+                ) : (
+                  <SeriesGrid list={shownSeries} onOpen={setSerPanel} />
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {sidebar}
+            <div className="main">
+              <div className="toolbar">
+                <span>共 {shownTotal} 本</span>
                 {picked.length > 1 ? (
                   <span className="chip on" onClick={() => setPicked([])} title="点掉取消多选">
                     已选 {picked.length} 本 ×
                   </span>
                 ) : null}
                 <SortBar sorts={sorts} onChange={setSorts} sortables={sortables} />
-                {view === "table" ? (
+                {layout === "table" ? (
                   <button
                     className={"mini xs" + (hidden.length ? " on" : "")}
                     onClick={(e) => {
@@ -684,12 +1087,22 @@ export default function App() {
                 </button>
                 <div className="chips">
                   {chips.map((c) => (
-                    <span key={c.label} className="chip on" onClick={c.clear} title="点掉这个条件">
+                    <span
+                      key={c.key}
+                      className={"chip on" + (c.preset ? " preset" : "")}
+                      onClick={c.clear}
+                      title={c.preset ? "点一下编辑视图的预设" : "点掉这个条件"}
+                    >
                       {c.label} ×
                     </span>
                   ))}
                 </div>
                 <span className="spacer" />
+                {tempDirty ? (
+                  <button className="mini xs" onClick={clearTemp} title="清空临时条件，回到视图预筛选">
+                    清除临时条件
+                  </button>
+                ) : null}
                 {loading ? <span>读取中…</span> : null}
               </div>
 
@@ -697,17 +1110,17 @@ export default function App() {
                 <ColumnPanel fields={fields} hidden={hidden} onChange={setHidden} onClose={() => setColOpen(false)} pos={panelPos} />
               ) : null}
               {advOpen ? (
-                <AdvPanel adv={adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
+                <AdvPanel adv={temp.adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
               ) : null}
 
               <div className="scroll" ref={scrollRef} onScroll={onScroll}>
-                {rows.length ? (
+                {shownRows.length ? (
                   <>
-                    {view === "grid" ? (
-                      <GridView rows={rows} selected={picked} onSelect={pickBook} onCtx={openCtx} />
+                    {layout === "shelf" ? (
+                      <GridView rows={shownRows} selected={picked} onSelect={pickBook} onCtx={openCtx} />
                     ) : (
                       <TableView
-                        rows={rows}
+                        rows={shownRows}
                         selected={picked}
                         fields={fields}
                         cats={cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId }))}
@@ -718,10 +1131,10 @@ export default function App() {
                       />
                     )}
                     <div className="loadmore">
-                      {rows.length < total ? "往下滚继续加载（已显示 " + rows.length + "）" : "到底了"}
+                      {shownRows.length < shownTotal ? "往下滚继续加载（已显示 " + shownRows.length + "）" : "到底了"}
                     </div>
                   </>
-                ) : info && info.bookCount === 0 ? (
+                ) : info.bookCount === 0 ? (
                   <div className="emptyguide">
                     <div className="eg-t">这个书库还是空的</div>
                     <div className="eg-d">
@@ -776,11 +1189,43 @@ export default function App() {
       ) : null}
 
       {ctx ? <CtxMenu x={ctx.x} y={ctx.y} items={ctx.items} onPick={pickCtx} onClose={() => setCtx(null)} /> : null}
+      {vctx ? (
+        <CtxMenu
+          x={vctx.x}
+          y={vctx.y}
+          items={viewCtxItems}
+          onPick={(k) => {
+            if (!vctx) return;
+            if (k === "edit") setEditor({ view: vctx.view });
+            if (k === "del") setDelView(vctx.view);
+          }}
+          onClose={() => setVctx(null)}
+        />
+      ) : null}
       {more ? <CtxMenu x={more.x} y={more.y} items={moreItems} onPick={pickMore} onClose={() => setMore(null)} /> : null}
 
       {cadmin ? <CategoryAdmin onClose={() => setCadmin(false)} onChanged={bump} /> : null}
       {fadmin ? <FieldAdmin onClose={() => setFadmin(false)} onChanged={bump} /> : null}
       {cbatch ? <CoverBatch onClose={() => setCbatch(false)} onChanged={bump} /> : null}
+
+      {editor ? (
+        <ViewEditor
+          key={editor.view?.id || "new"}
+          initial={editor.view}
+          cats={cats}
+          onCancel={() => setEditor(null)}
+          onSave={saveView}
+        />
+      ) : null}
+
+      {delView ? (
+        <Confirm
+          text={"删除视图「" + delView.name + "」？只删除这条视图配置，书和书评都不动。"}
+          okText="删除视图"
+          onOk={confirmDeleteView}
+          onCancel={() => setDelView(null)}
+        />
+      ) : null}
 
       {ask ? (
         <Confirm

@@ -138,78 +138,131 @@ export function expandCategories(db: DB, names: string[]): string[] {
   return [...out];
 }
 
-export function listBooks(db: DB, q: BookQuery): ListResult {
-  const where: string[] = ["b.deleted_at IS NULL"];
-  const params: any[] = [];
+/** 关键词条件。三个字符以上走全文索引，短词退回 LIKE，与原来的分法一致 */
+function keywordWhere(kw: string, alias: string): { sql: string; params: any[] } | null {
+  if (!kw) return null;
+  if (kw.length >= 3) {
+    return {
+      sql: `${alias}.rowid IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)`,
+      params: [ftsQuery(kw)]
+    };
+  }
+  const like = "%" + kw + "%";
+  return {
+    sql:
+      `(${alias}.title LIKE ? OR ${alias}.original_title LIKE ? OR ${alias}.subtitle LIKE ?` +
+      ` OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id` +
+      ` WHERE ba.book_id = ${alias}.id AND a.name LIKE ?))`,
+    params: [like, like, like, like]
+  };
+}
 
-  const kw = (q.q || "").trim();
-  if (kw) {
-    if (kw.length >= 3) {
-      where.push("b.rowid IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)");
-      params.push(ftsQuery(kw));
-    } else {
-      where.push("(b.title LIKE ? OR b.original_title LIKE ? OR b.subtitle LIKE ? OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id WHERE ba.book_id = b.id AND a.name LIKE ?))");
-      const like = "%" + kw + "%";
-      params.push(like, like, like, like);
+function readWhere(value: BookQuery["read"], alias: string): string | null {
+  if (value === "read") return `${alias}.is_read = 1`;
+  if (value === "unread") return `${alias}.is_read = 0`;
+  if (value === "rated") return `${alias}.rating IS NOT NULL AND ${alias}.rating > 0`;
+  return null;
+}
+
+export interface BookWhereOptions {
+  /** 是否带上 deleted_at IS NULL。单册列表要；系列成员由自己的子查询补 */
+  base?: boolean;
+  /** 关键词条件是否由这里出。系列视图的关键词按系列名匹配，成员条件要关掉这一项 */
+  keywords?: boolean;
+}
+
+/**
+ * 单册筛选的 SQL 条件。系列视图的成员筛选复用这一份，
+ * 保证「符合条件」在单册列表与系列列表里是同一套判定。
+ */
+export function bookWhere(
+  db: DB,
+  q: BookQuery,
+  alias = "b",
+  opts: BookWhereOptions = {}
+): { sql: string; params: any[] } {
+  const where: string[] = [];
+  const params: any[] = [];
+  if (opts.base !== false) where.push(`${alias}.deleted_at IS NULL`);
+
+  /* 预设关键词按空白拆词，每个词各自成一条；临时关键词整句一条。两组都要命中 */
+  if (opts.keywords !== false) {
+    for (const word of String(q.presetQ || "").split(/\s+/).filter(Boolean)) {
+      const hit = keywordWhere(word, alias);
+      if (hit) {
+        where.push(hit.sql);
+        params.push(...hit.params);
+      }
+    }
+    const hit = keywordWhere(String(q.q || "").trim(), alias);
+    if (hit) {
+      where.push(hit.sql);
+      params.push(...hit.params);
     }
   }
+
   if (q.media && q.media !== "全部") {
-    where.push("b.media_type = ?");
+    where.push(`${alias}.media_type = ?`);
     params.push(q.media);
   }
   if (q.seriesId) {
-    where.push("b.series_id = ?");
+    where.push(`${alias}.series_id = ?`);
     params.push(q.seriesId);
   }
-  if (q.read === "read") where.push("b.is_read = 1");
-  if (q.read === "unread") where.push("b.is_read = 0");
-  if (q.read === "rated") where.push("b.rating IS NOT NULL AND b.rating > 0");
-  if (q.noCover === true) where.push("b.cover_file = ''");
-  if (q.noCover === false) where.push("b.cover_file <> ''");
-  if (q.categories && q.categories.length) {
+  for (const r of [q.presetRead, q.read]) {
+    const cond = readWhere(r, alias);
+    if (cond) where.push(cond);
+  }
+  if (q.noCover === true) where.push(`${alias}.cover_file = ''`);
+  if (q.noCover === false) where.push(`${alias}.cover_file <> ''`);
+
+  /* 预设分类与临时分类各自成一条，同一本册要两边都落在 */
+  for (const list of [q.presetCategories, q.categories]) {
+    if (!list || !list.length) continue;
     /* 大分类只是分组，书挂在叶子标签上。点「题材」要把旗下所有标签的书一起算进来 */
-    const picked = expandCategories(db, q.categories);
+    const picked = expandCategories(db, list);
+    if (!picked.length) continue;
     const marks = picked.map(() => "?").join(",");
     where.push(
-      `b.id IN (SELECT bc.book_id FROM book_categories bc JOIN categories c ON c.id = bc.category_id WHERE c.name IN (${marks}))`
+      `${alias}.id IN (SELECT bc.book_id FROM book_categories bc JOIN categories c ON c.id = bc.category_id WHERE c.name IN (${marks}))`
     );
     params.push(...picked);
   }
   if (q.states && q.states.length) {
     const marks = q.states.map(() => "?").join(",");
-    where.push(`b.id IN (SELECT book_id FROM book_states WHERE state IN (${marks}))`);
+    where.push(`${alias}.id IN (SELECT book_id FROM book_states WHERE state IN (${marks}))`);
     params.push(...q.states);
   }
   if (q.ebook && q.ebook.length) {
     const marks = q.ebook.map(() => "?").join(",");
-    where.push(`b.ebook_state IN (${marks})`);
+    where.push(`${alias}.ebook_state IN (${marks})`);
     params.push(...q.ebook);
   }
   if (q.decades && q.decades.length) {
-    where.push("(" + q.decades.map(() => "b.publish_year BETWEEN ? AND ?").join(" OR ") + ")");
+    where.push("(" + q.decades.map(() => `${alias}.publish_year BETWEEN ? AND ?`).join(" OR ") + ")");
     for (const d of q.decades) params.push(d, d + 9);
   }
 
   /* 高级筛选：区间与存在性条件，留空的那一项不加 */
   const adv = q.adv;
   if (adv) {
-    if (adv.ratingMin != null) (where.push("b.rating >= ?"), params.push(adv.ratingMin));
-    if (adv.ratingMax != null) (where.push("b.rating <= ?"), params.push(adv.ratingMax));
-    if (adv.yearFrom != null) (where.push("b.publish_year >= ?"), params.push(adv.yearFrom));
-    if (adv.yearTo != null) (where.push("b.publish_year <= ?"), params.push(adv.yearTo));
+    if (adv.ratingMin != null) (where.push(`${alias}.rating >= ?`), params.push(adv.ratingMin));
+    if (adv.ratingMax != null) (where.push(`${alias}.rating <= ?`), params.push(adv.ratingMax));
+    if (adv.yearFrom != null) (where.push(`${alias}.publish_year >= ?`), params.push(adv.yearFrom));
+    if (adv.yearTo != null) (where.push(`${alias}.publish_year <= ?`), params.push(adv.yearTo));
     if (adv.hasReview === true)
-      where.push("EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)");
+      where.push(`EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = ${alias}.id AND r.deleted_at IS NULL)`);
     if (adv.hasReview === false)
-      where.push("NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = b.id AND r.deleted_at IS NULL)");
+      where.push(`NOT EXISTS (SELECT 1 FROM reviews r WHERE r.book_id = ${alias}.id AND r.deleted_at IS NULL)`);
     const note = String(adv.note || "").trim();
-    if (note) (where.push("b.note LIKE ?"), params.push("%" + note + "%"));
+    if (note) (where.push(`${alias}.note LIKE ?`), params.push("%" + note + "%"));
   }
 
   /* 自定义字段的筛选。一条一个 EXISTS，未填值的不匹配，与左栏那套一致 */
   if (q.fvals && q.fvals.length) {
     for (const f of q.fvals) {
       if (!f || !f.key) continue;
-      const sub = `SELECT 1 FROM book_field_values v JOIN fields ff ON ff.id = v.field_id WHERE v.book_id = b.id AND ff.key = ?`;
+      const sub = `SELECT 1 FROM book_field_values v JOIN fields ff ON ff.id = v.field_id WHERE v.book_id = ${alias}.id AND ff.key = ?`;
       if (f.op === "yes") {
         where.push(`EXISTS (${sub} AND v.val = '1')`);
         params.push(f.key);
@@ -233,7 +286,13 @@ export function listBooks(db: DB, q: BookQuery): ListResult {
     }
   }
 
-  const sqlWhere = where.length ? " WHERE " + where.join(" AND ") : "";
+  return { sql: where.join(" AND "), params };
+}
+
+export function listBooks(db: DB, q: BookQuery): ListResult {
+  const built = bookWhere(db, q, "b");
+  const params = built.params;
+  const sqlWhere = built.sql ? " WHERE " + built.sql : "";
   const order = orderBy(db, q.sorts);
   const limit = Math.min(Math.max(q.limit || 120, 1), 2000);
   const offset = Math.max(q.offset || 0, 0);

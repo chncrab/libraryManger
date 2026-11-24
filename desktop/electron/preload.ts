@@ -8,9 +8,11 @@ import type {
   FieldInput,
   FieldPatch,
   FieldType,
+  LibraryView,
   ReviewInput,
   ReviewPatch,
-  SeriesPatch
+  SeriesPatch,
+  SeriesQuery
 } from "../shared/types";
 
 const api: BooklibApi = {
@@ -41,7 +43,7 @@ const api: BooklibApi = {
   getBook: (id: string) => ipcRenderer.invoke("books:get", id),
   facets: (media?: string) => ipcRenderer.invoke("books:facets", media),
   seriesAvg: (id: number) => ipcRenderer.invoke("series:avg", id),
-  seriesList: (mediaType?: string) => ipcRenderer.invoke("series:list", mediaType),
+  seriesList: (query?: string | SeriesQuery) => ipcRenderer.invoke("series:list", query),
   seriesBooks: (id: number) => ipcRenderer.invoke("series:books", id),
   seriesReview: (id: number) => ipcRenderer.invoke("series:review", id),
   seriesUpdate: (id: number, patch: SeriesPatch) => ipcRenderer.invoke("series:update", id, patch),
@@ -112,6 +114,8 @@ const api: BooklibApi = {
 
   getSetting: (key: string) => ipcRenderer.invoke("settings:get", key),
   setSetting: (key: string, value: string) => ipcRenderer.invoke("settings:set", key, value),
+  views: () => ipcRenderer.invoke("views:list"),
+  saveViews: (views: LibraryView[], expectedRoot?: string) => ipcRenderer.invoke("views:save", views, expectedRoot),
 
   listFields: (includeDeleted?: boolean) => ipcRenderer.invoke("fields:list", !!includeDeleted),
   createField: (p: FieldInput) => ipcRenderer.invoke("fields:create", p),

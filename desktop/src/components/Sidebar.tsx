@@ -1,7 +1,9 @@
 import { useState } from "react";
-import type { FacetItem, Facets } from "../../shared/types";
+import type { FacetItem, Facets, ViewUnit } from "../../shared/types";
 
 export interface FilterState {
+  /** 临时媒介。视图预设了媒介时不用这一条 */
+  media: string;
   read: "all" | "read" | "unread" | "rated";
   noCover: boolean | null;
   categories: string[];
@@ -12,6 +14,7 @@ export interface FilterState {
 }
 
 export const EMPTY_FILTER: FilterState = {
+  media: "",
   read: "all",
   noCover: null,
   categories: [],
@@ -26,11 +29,14 @@ type MultiKey = "categories" | "states" | "ebook" | "decades";
 interface Props {
   facets: Facets | null;
   filter: FilterState;
+  /** 视图预设的媒介。非空时左栏只显示它，不许临时改 */
+  presetMedia?: string;
+  unit?: ViewUnit;
   onChange: (patch: Partial<FilterState>) => void;
   onManageCats: () => void;
 }
 
-export default function Sidebar({ facets, filter, onChange, onManageCats }: Props) {
+export default function Sidebar({ facets, filter, presetMedia = "", unit = "book", onChange, onManageCats }: Props) {
   const [serOpen, setSerOpen] = useState(false);
   if (!facets) return <aside className="side" />;
 
@@ -49,6 +55,7 @@ export default function Sidebar({ facets, filter, onChange, onManageCats }: Prop
   const unreadN = n(facets.read, "未读");
   const noCoverN = n(facets.cover, "无封面");
   const hasCoverN = n(facets.cover, "有封面");
+  const mediaTotal = facets.media.reduce((s, x) => s + x.n, 0);
 
   /* 分类按两级摆：大分类在前，它下面的小标签紧跟其后缩进。
      分面给的数字已经是整棵子树去重后的量，点大分类得到的就是这个数 */
@@ -68,6 +75,34 @@ export default function Sidebar({ facets, filter, onChange, onManageCats }: Prop
   return (
     <aside className="side">
       <div className="side-tip">普通点击单选　Shift 点击叠加　再点一次取消</div>
+
+      <h4>媒介</h4>
+      {presetMedia ? (
+        <div className="facet preset" title="这是视图预设的媒介，要改请编辑视图">
+          {presetMedia}
+          <span className="n">预设</span>
+        </div>
+      ) : (
+        <>
+          <div
+            className={"facet" + (filter.media === "" ? " on" : "")}
+            onClick={() => onChange({ media: "" })}
+          >
+            全部
+            <span className="n">{mediaTotal}</span>
+          </div>
+          {["小说", "漫画"].map((m) => (
+            <div
+              key={m}
+              className={"facet" + (filter.media === m ? " on" : "")}
+              onClick={() => onChange({ media: filter.media === m ? "" : m })}
+            >
+              {m}
+              <span className="n">{n(facets.media, m)}</span>
+            </div>
+          ))}
+        </>
+      )}
 
       <h4 className="h4row">
         分类
@@ -90,21 +125,25 @@ export default function Sidebar({ facets, filter, onChange, onManageCats }: Prop
         </div>
       ))}
 
-      <h4>封面</h4>
-      {[
-        { k: null as boolean | null, label: "不限", c: "" },
-        { k: true, label: "无封面", c: noCoverN },
-        { k: false, label: "有封面", c: hasCoverN }
-      ].map((o) => (
-        <div
-          key={String(o.k)}
-          className={"facet" + (filter.noCover === o.k ? " on" : "")}
-          onClick={() => onChange({ noCover: o.k })}
-        >
-          {o.label}
-          <span className="n">{o.c}</span>
-        </div>
-      ))}
+      {unit === "book" ? (
+        <>
+          <h4>封面</h4>
+          {[
+            { k: null as boolean | null, label: "不限", c: "" },
+            { k: true, label: "无封面", c: noCoverN },
+            { k: false, label: "有封面", c: hasCoverN }
+          ].map((o) => (
+            <div
+              key={String(o.k)}
+              className={"facet" + (filter.noCover === o.k ? " on" : "")}
+              onClick={() => onChange({ noCover: o.k })}
+            >
+              {o.label}
+              <span className="n">{o.c}</span>
+            </div>
+          ))}
+        </>
+      ) : null}
 
       <h4>实体书</h4>
       {states.map((s) => (
@@ -157,22 +196,26 @@ export default function Sidebar({ facets, filter, onChange, onManageCats }: Prop
         </div>
       ))}
 
-      <h4>系列（按册数）</h4>
-      {(serOpen ? facets.series : facets.series.slice(0, 24)).map((s) => (
-        <div
-          key={s.id}
-          className={"facet ser" + (filter.seriesId === s.id ? " on" : "")}
-          title={s.mediaType}
-          onClick={() => onChange({ seriesId: filter.seriesId === s.id ? null : s.id })}
-        >
-          {s.name}
-          <span className="n">{s.n}</span>
-        </div>
-      ))}
-      {facets.series.length > 24 ? (
-        <div className="facet more" onClick={() => setSerOpen(!serOpen)}>
-          {serOpen ? "收起" : "展开全部（" + facets.series.length + "）"}
-        </div>
+      {unit === "book" ? (
+        <>
+          <h4>系列（按册数）</h4>
+          {(serOpen ? facets.series : facets.series.slice(0, 24)).map((s) => (
+            <div
+              key={s.id}
+              className={"facet ser" + (filter.seriesId === s.id ? " on" : "")}
+              title={s.mediaType}
+              onClick={() => onChange({ seriesId: filter.seriesId === s.id ? null : s.id })}
+            >
+              {s.name}
+              <span className="n">{s.n}</span>
+            </div>
+          ))}
+          {facets.series.length > 24 ? (
+            <div className="facet more" onClick={() => setSerOpen(!serOpen)}>
+              {serOpen ? "收起" : "展开全部（" + facets.series.length + "）"}
+            </div>
+          ) : null}
+        </>
       ) : null}
     </aside>
   );

@@ -169,13 +169,22 @@ export const EMPTY_ADV: AdvFilter = {
   fvals: []
 };
 
+/** 阅读状态筛选。单册、系列与视图配置共用这一组值 */
+export type ReadFilter = "all" | "read" | "unread" | "rated";
+
 export interface BookQuery {
   q?: string;
+  /** 视图预设关键词。与 q 各自成一条条件，两组都要命中 */
+  presetQ?: string;
   media?: string;
   seriesId?: number | null;
-  read?: "all" | "read" | "unread" | "rated";
+  read?: ReadFilter;
+  /** 视图预设阅读状态。与 read 同时成立，两层条件都生效 */
+  presetRead?: ReadFilter;
   noCover?: boolean | null;
   categories?: string[];
+  /** 视图预设分类。与 categories 各自成一条条件，同一本册要同时落在两边 */
+  presetCategories?: string[];
   states?: string[];
   ebook?: string[];
   decades?: number[];
@@ -191,6 +200,132 @@ export interface BookQuery {
 export interface ListResult {
   total: number;
   rows: BookRow[];
+}
+
+/**
+ * 系列集合的筛选条件。关键词按系列原名与译名匹配；
+ * 分类、阅读状态这些单册条件要求系列里至少有一册同时满足，
+ * 册数、已读数、均分与封面仍按整套在架的书算。
+ */
+export interface SeriesQuery {
+  media?: string;
+  /** 视图预设关键词。与 q 各自成一条条件 */
+  presetQ?: string;
+  q?: string;
+  presetCategories?: string[];
+  categories?: string[];
+  presetRead?: ReadFilter;
+  read?: ReadFilter;
+  states?: string[];
+  ebook?: string[];
+  decades?: number[];
+  adv?: AdvFilter;
+  fvals?: FieldFilter[];
+}
+
+/* ---- 自定义书库视图 ---- */
+
+/** 一格一本书还是一格一个系列 */
+export type ViewUnit = "book" | "series";
+
+/** 书架卡片或表格行 */
+export type ViewLayout = "shelf" | "table";
+
+/** 视图保存下来的预筛选。进视图后的临时条件在它之上再与一层 */
+export interface LibraryViewFilter {
+  /** 空串表示全媒介 */
+  media: string;
+  /** 预设关键词，空格分词后每个词都要命中 */
+  keywords: string[];
+  /** 预设分类，展开后代后与临时分类各自成条件 */
+  categories: string[];
+  read: ReadFilter;
+}
+
+export const EMPTY_VIEW_FILTER: LibraryViewFilter = {
+  media: "",
+  keywords: [],
+  categories: [],
+  read: "all"
+};
+
+export interface LibraryView {
+  /** 稳定 ID，保存后不再变，界面靠它记住当前标签 */
+  id: string;
+  name: string;
+  unit: ViewUnit;
+  layout: ViewLayout;
+  filter: LibraryViewFilter;
+  /** 顺序。保存时按数组下标重排，这里存一份方便界面直接读 */
+  ord: number;
+}
+
+/** 「全部」由界面虚拟构建，不进配置；这个 ID 不许出现在保存的视图里 */
+export const FIXED_VIEW_ID = "all";
+
+/** 视图配置在 SQLite settings 里的键，带版本号，结构变了另起一个 */
+export const VIEW_CONFIG_KEY = "library_views_v1";
+
+/**
+ * 首次初始化写进配置的四个预设。「全部」另有，不在这里。
+ * 只初始化一次，之后整排删空也不再补回来，所以界面要用得先复制一份。
+ */
+export const VIEW_PRESETS: LibraryView[] = [
+  {
+    id: "preset-novel",
+    name: "小说",
+    unit: "book",
+    layout: "shelf",
+    filter: { media: "小说", keywords: [], categories: [], read: "all" },
+    ord: 0
+  },
+  {
+    id: "preset-manga",
+    name: "漫画",
+    unit: "book",
+    layout: "shelf",
+    filter: { media: "漫画", keywords: [], categories: [], read: "all" },
+    ord: 1
+  },
+  {
+    id: "preset-series-novel",
+    name: "系列小说",
+    unit: "series",
+    layout: "shelf",
+    filter: { media: "小说", keywords: [], categories: [], read: "all" },
+    ord: 2
+  },
+  {
+    id: "preset-series-manga",
+    name: "系列漫画",
+    unit: "series",
+    layout: "shelf",
+    filter: { media: "漫画", keywords: [], categories: [], read: "all" },
+    ord: 3
+  }
+];
+
+/** 给新视图发一个稳定 ID。保存时原样存回，之后不再变 */
+export function newViewId(): string {
+  const c: { randomUUID?: () => string } | undefined = (globalThis as any).crypto;
+  if (c && typeof c.randomUUID === "function") return "view-" + c.randomUUID();
+  return "view-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+/** ok 读到完整配置；seeded 首次初始化；empty 自定义视图已删空；
+    repaired 跳过了坏条目；corrupt 整份读不出来，只剩界面上的「全部」 */
+export type ViewConfigStatus = "ok" | "seeded" | "empty" | "repaired" | "corrupt";
+
+export interface ViewConfigResult {
+  views: LibraryView[];
+  status: ViewConfigStatus;
+  msg?: string;
+}
+
+export interface ViewSaveResult {
+  ok: boolean;
+  views?: LibraryView[];
+  msg?: string;
 }
 
 /** 时间线上的一条。只装画那一条要用的东西，不把 BookRow 那二十几个字段搬过来 */
@@ -565,7 +700,8 @@ export interface BooklibApi {
   getBook(id: string): Promise<{ book: BookRow; review: { md: string; grade: string; happenedAt: string } | null } | null>;
   facets(media?: string): Promise<Facets>;
   seriesAvg(id: number): Promise<SeriesAvg>;
-  seriesList(mediaType?: string): Promise<SeriesInfo[]>;
+  /** 传媒介字符串是旧调用；传 SeriesQuery 时按系列与成员条件筛 */
+  seriesList(query?: string | SeriesQuery): Promise<SeriesInfo[]>;
   seriesBooks(id: number): Promise<BookRow[]>;
   seriesReview(id: number): Promise<{ id: number; md: string; grade: string } | null>;
   /** 改系列原名与译名。原名撞键会被拒，译名撞名只提示 */
@@ -630,6 +766,12 @@ export interface BooklibApi {
   /** 通用键值设置，主题、列设置、排序都存这里 */
   getSetting(key: string): Promise<string>;
   setSetting(key: string, value: string): Promise<boolean>;
+
+  /** 书库视图配置。读取时负责首次初始化，返回状态区分缺失、删空与损坏 */
+  views(): Promise<ViewConfigResult>;
+  /** 整排保存：新增、改名、改条件、拖动排序、删除都走这一条，按数组顺序落 ord。
+      expectedRoot 传当前书库根目录，切换书库后才到的保存会被拒，不会写进另一库 */
+  saveViews(views: LibraryView[], expectedRoot?: string): Promise<ViewSaveResult>;
 
   /** 字段定义。表格列、详情行、排序键、筛选控件都从这里取 */
   listFields(includeDeleted?: boolean): Promise<FieldDef[]>;

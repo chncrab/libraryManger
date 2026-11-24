@@ -177,8 +177,8 @@ export default function SeriesPanel({ series, onClose, onOpenBook, onWriteReview
             <button className="mini" onClick={() => onWriteReview(info)} title={hasReview ? "去写这个系列的总评" : "为整个系列新建一篇总评"}>
               {hasReview ? "查看系列书评" : "写系列书评"}
             </button>
-            <button className="mini" onClick={() => onFilterSeries(info)}>
-              只看本系列
+            <button className="mini" onClick={() => onFilterSeries(info)} title="打开「全部」表格，临时只看这个系列">
+              在表格中查看
             </button>
           </div>
         </div>

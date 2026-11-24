@@ -1,18 +1,67 @@
 import type { DB } from "../db";
-import type { BookRow, SeriesInfo, SeriesPatch, SeriesResult } from "../../shared/types";
+import type { BookQuery, BookRow, SeriesInfo, SeriesPatch, SeriesQuery, SeriesResult } from "../../shared/types";
 import { rebuildFts } from "../db/fts";
-import { listBooks } from "./bookService";
+import { bookWhere, listBooks } from "./bookService";
 import { seriesDisplay, seriesLabel, seriesTitle } from "../../shared/seriesText";
 
 export { seriesLabel, seriesTitle };
 
 /**
+ * 系列关键词：按原名与译名匹配，空格分出的每个词都要命中。
+ * 显示名就是译名优先、没有才用原名，这两列 LIKE 一遍已经覆盖。
+ */
+function seriesKeywordWhere(kw: string): { sql: string; params: any[] } | null {
+  const words = kw.split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const parts: string[] = [];
+  const params: any[] = [];
+  for (const w of words) {
+    parts.push("(s.name LIKE ? OR s.zh_name LIKE ?)");
+    const like = "%" + w + "%";
+    params.push(like, like);
+  }
+  return { sql: "(" + parts.join(" AND ") + ")", params };
+}
+
+/**
  * 系列集合一格格的数据。册数与均分只算在架书，均分只算读过且打过分的那几册。
  * 封面取系列里册序最靠前、且有封面的一本。
  * label 是给人看的名字，译名优先；original 是原作语言的名，与 label 相同就不必显示。
+ *
+ * 参数保留旧的媒介字符串写法；传 SeriesQuery 时关键词按系列名匹配，
+ * 分类、阅读状态这类单册条件走 bookWhere，要求系列里至少有一册同时满足。
+ * 成员条件只决定系列出不出现，册数与均分仍按整套在架的书算。
  */
-export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
-  const on = !!mediaType && mediaType !== "全部";
+export function listSeries(db: DB, arg: string | SeriesQuery = ""): SeriesInfo[] {
+  const q: SeriesQuery = typeof arg === "string" ? { media: arg } : arg || {};
+  const where: string[] = [];
+  const params: any[] = [];
+
+  for (const raw of [q.presetQ, q.q]) {
+    const hit = seriesKeywordWhere(String(raw || "").trim());
+    if (hit) {
+      where.push(hit.sql);
+      params.push(...hit.params);
+    }
+  }
+
+  const media = q.media || "";
+  if (media && media !== "全部") {
+    where.push("s.media_type = ?");
+    params.push(media);
+  }
+
+  /* 媒介由系列自己定，成员条件里去掉，只留分类、阅读状态这些单册条件 */
+  const memberQ: BookQuery = { ...q, media: undefined };
+  const member = bookWhere(db, memberQ, "bm", { base: false, keywords: false });
+  if (member.sql) {
+    where.push(
+      `EXISTS (SELECT 1 FROM books bm WHERE bm.series_id = s.id AND bm.deleted_at IS NULL AND (${member.sql}))`
+    );
+    params.push(...member.params);
+  }
+
+  const sqlWhere = where.length ? " WHERE " + where.join(" AND ") : "";
   const rows = db
     .prepare(
       `SELECT s.id, s.name, s.zh_name, s.media_type AS mediaType,
@@ -22,11 +71,11 @@ export function listSeries(db: DB, mediaType = ""): SeriesInfo[] {
               MAX(b.updated_at) AS updatedAt
          FROM series s
          JOIN books b ON b.series_id = s.id AND b.deleted_at IS NULL
-        ${on ? "WHERE s.media_type = ?" : ""}
+         ${sqlWhere}
         GROUP BY s.id
         ORDER BY n DESC`
     )
-    .all(...(on ? [mediaType] : [])) as any[];
+    .all(...params) as any[];
 
   const covers = db
     .prepare(

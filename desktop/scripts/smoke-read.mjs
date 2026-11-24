@@ -200,7 +200,7 @@ async function smoke() {
     await call("Runtime.enable");
     await call("Emulation.setFocusEmulationEnabled", { enabled: true });
     await resize(1260, 780);
-    await until("书架加载", () => query(".card"), 15000);
+    await until("全部表格加载", () => query(".table tbody tr"), 15000);
     check("打开阅读", await button("阅读"));
     const api = await evaluate("(async () => ({ list: await window.api.readTimeline(), stats: await window.api.readStats() }))()");
     check("只有小说进入阅读视图", api.list.length === 34 && !api.list.some((entry) => entry.id === "manga"));

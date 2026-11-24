@@ -103,6 +103,17 @@ const clickText = (sel, text) =>
       text
     )}); if (!el) return false; el.click(); return true; })()`
   );
+/* 系列集合与书架现在都在书库标签栏里，顶栏 .seg 只剩书评/阅读 */
+const clickTab = (name) =>
+  js(
+    `(() => {
+      const tab = [...document.querySelectorAll('.viewtabs .vt-tab')]
+        .find(t => ((t.querySelector('.vt-name') || {}).textContent || '').trim() === ${JSON.stringify(name)});
+      if (!tab) return false;
+      tab.click();
+      return true;
+    })()`
+  );
 /* 受控输入框要靠原生 setter 赋值，直接改 value 不会触发 React 的 onChange */
 const setInput = (sel, text, nth = 0) =>
   js(`(() => {
@@ -163,7 +174,7 @@ await call("Runtime.enable");
 await wait(2600);
 
 /* ---- 进系列集合，开第一张卡 ---- */
-await clickText(".topbar .seg button", "系列小说");
+await clickTab("系列小说");
 await wait(1200);
 const cardText = String((await js(`(document.querySelector('.scard')||{}).textContent||''`)) || "");
 check("系列集合有卡", !!cardText, cardText.slice(0, 24));
