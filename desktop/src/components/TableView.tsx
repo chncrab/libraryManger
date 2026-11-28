@@ -1,4 +1,4 @@
-import { cloneElement, type ReactElement } from "react";
+import { cloneElement, useEffect, useRef, useState, type ReactElement } from "react";
 import type { BookPatch, BookRow, FieldDef } from "../../shared/types";
 import { gradeIcon } from "./GridView";
 import { FieldCell } from "./FieldRenderer";
@@ -23,6 +23,21 @@ interface Props {
 export default function TableView({ rows, selected, fields, cats, hidden, onSelect, onCtx, onPatch }: Props) {
   const cols = colsFromFields(fields, hidden);
   const byKey = new Map(fields.map((f) => [f.key, f]));
+  /* 全表只维护一个活动格：书号 + 字段键 */
+  const [active, setActive] = useState<string | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+
+  /* 点编辑框与控件以外的地方（含 .scroll 空白）都收起当前输入 */
+  useEffect(() => {
+    const clearBlank = (e: Event) => {
+      const cell = e.target instanceof Element ? e.target.closest("td[data-field-cell]") : null;
+      if (cell && tableRef.current?.contains(cell)) return;
+      setActive(null);
+    };
+    /* 用 click 而非 mousedown：先让输入框失焦提交，再收起 */
+    document.addEventListener("click", clearBlank, true);
+    return () => document.removeEventListener("click", clearBlank, true);
+  }, []);
 
   const cell = (c: ColDef, b: BookRow) => {
     if (c.key === "more") {
@@ -54,12 +69,19 @@ export default function TableView({ rows, selected, fields, cats, hidden, onSele
     }
     const f = byKey.get(c.key);
     if (!f) return <td />;
+    const key = b.id + "|" + c.key;
     return (
-      <td className={c.key === "title" ? "title" : undefined}>
+      <td
+        data-field-cell
+        className={[c.key === "title" ? "title" : "", active === key ? "active-cell" : ""].filter(Boolean).join(" ")}
+        onClick={() => { if (active !== key) setActive(key); }}
+      >
         <FieldCell
           field={f}
           row={b}
           pickAll={f.patchKey === "categories" ? cats : undefined}
+          editing={active === key}
+          onDismiss={() => setActive((k) => (k === key ? null : k))}
           onPatch={onPatch}
         />
       </td>
@@ -67,7 +89,7 @@ export default function TableView({ rows, selected, fields, cats, hidden, onSele
   };
 
   return (
-    <table className="table">
+    <table className="table" ref={tableRef} onKeyDown={(e) => { if (e.key === "Escape") setActive(null); }}>
       <thead>
         <tr>
           {cols.map((c) => (
@@ -84,7 +106,12 @@ export default function TableView({ rows, selected, fields, cats, hidden, onSele
       </thead>
       <tbody>
         {rows.map((b) => (
-          <tr key={b.id} className={selected.includes(b.id) ? "on" : ""} onContextMenu={(e) => onCtx(e, b)}>
+          <tr
+            key={b.id}
+            data-book-id={b.id}
+            className={selected.includes(b.id) ? "on" : ""}
+            onContextMenu={(e) => onCtx(e, b)}
+          >
             {cols.map((c) => {
               /* 每格补上列名，测试与脚本按列名取格子，不靠第几个孩子 */
               const el = cell(c, b) as ReactElement;

@@ -6,11 +6,13 @@ import { FieldEditor, patchOf, valuesOf } from "./FieldRenderer";
 import CoverSearch from "./CoverSearch";
 import CoverViewer from "./CoverViewer";
 import Confirm from "./Confirm";
+import CategoryTagDialog from "./CategoryTagDialog";
 
 interface Props {
   id: string | null;
   /** 字段定义，详情里的每一行都由它生成 */
   fields: FieldDef[];
+  cats: CatNode[];
   onClose: () => void;
   onSaved: () => void;
 }
@@ -21,7 +23,7 @@ interface Loaded {
 }
 
 /* 详情是右侧抽屉，点外侧遮罩或按 Esc 收起，和 demo 一致；字段全部可直接改，改完自动落库 */
-export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
+export default function DetailPanel({ id, fields, cats, onClose, onSaved }: Props) {
   const [data, setData] = useState<Loaded | null>(null);
   /* 大图开着的时候，Esc 先收大图，别把整个抽屉一起收掉 */
   const [coverOpen, setCoverOpen] = useState(false);
@@ -60,18 +62,19 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
 
   return (
     <>
-      <div className={"mask" + (open ? " on" : "")} onClick={onClose} />
+      <div className={"mask drawer-mask" + (open ? " on" : "")} onClick={onClose} />
       <aside className={"drawer" + (open ? " on" : "")} aria-hidden={!open}>
         {data ? (
           <Body
             key={data.book.id}
             data={data}
             fields={fields}
+            cats={cats}
             coverOpen={coverOpen}
             setCoverOpen={setCoverOpen}
             onClose={onClose}
             onSaved={onSaved}
-            onPatched={(nb) => setData((d) => (d ? { ...d, book: nb } : d))}
+            onPatched={(nb) => setData((d) => (d?.book.id === nb.id ? { ...d, book: nb } : d))}
           />
         ) : null}
       </aside>
@@ -82,6 +85,7 @@ export default function DetailPanel({ id, fields, onClose, onSaved }: Props) {
 function Body({
   data,
   fields,
+  cats,
   coverOpen,
   setCoverOpen,
   onClose,
@@ -90,6 +94,7 @@ function Body({
 }: {
   data: Loaded;
   fields: FieldDef[];
+  cats: CatNode[];
   coverOpen: boolean;
   setCoverOpen: (v: boolean) => void;
   onClose: () => void;
@@ -97,15 +102,11 @@ function Body({
   onPatched: (b: BookRow) => void;
 }) {
   const b = data.book;
-  const [cats, setCats] = useState<CatNode[]>([]);
+  const [editingTag, setEditingTag] = useState<CatNode | null>(null);
   const [msg, setMsg] = useState("");
   const [finding, setFinding] = useState(false);
   const [askCover, setAskCover] = useState(false);
   const msgTimer = useRef<number>(0);
-
-  useEffect(() => {
-    api.categoryTree().then(setCats);
-  }, []);
 
   const flash = (t: string) => {
     setMsg(t);
@@ -170,7 +171,7 @@ function Body({
       field={f}
       values={valuesOf(f, b)}
       bookId={b.id}
-      pickAll={f.patchKey === "categories" ? cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })) : undefined}
+      pickAll={f.patchKey === "categories" ? cats : undefined}
       onCommit={(v) => put(f, v)}
     />
   );
@@ -217,6 +218,21 @@ function Body({
           <div className="drow2">
             {editor(f)}
             <span className="dim">0 到 10，空着算未评分</span>
+          </div>
+        </Row>
+      );
+    }
+    if (f.patchKey === "categories") {
+      return (
+        <Row key={f.key} label={f.label}>
+          <div onContextMenu={(e) => {
+            const name = (e.target as Element).closest("[data-pick-name]")?.getAttribute("data-pick-name");
+            const tag = cats.find((c) => c.name === name);
+            if (!tag) return;
+            e.preventDefault();
+            setEditingTag(tag);
+          }}>
+            {editor(f)}
           </div>
         </Row>
       );
@@ -284,6 +300,18 @@ function Body({
           </>
         ) : null}
       </div>
+
+      {editingTag ? (
+        <CategoryTagDialog
+          tag={editingTag}
+          mode="name"
+          onClose={() => setEditingTag(null)}
+          onSaved={() => {
+            void api.getBook(b.id).then((d) => { if (d) onPatched(d.book); });
+            onSaved();
+          }}
+        />
+      ) : null}
 
       {finding ? (
         <CoverSearch

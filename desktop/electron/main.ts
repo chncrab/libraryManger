@@ -5,8 +5,8 @@ import { pathToFileURL } from "node:url";
 import { openDb, closeDb } from "./db";
 import type { DB } from "./db";
 import { listBooks, getBook, facets, seriesAvg, suggestBookField } from "./services/bookService";
-import { updateBook, deleteBook, restoreBook, copyBook, copyBooks, setRead, setRating } from "./services/editService";
-import { categoryTree, createCategory, renameCategory, setCategoryParent, removeCategory, moveCategory } from "./services/categoryService";
+import { updateBook, deleteBook, restoreBook, copyBook, copyBooks, setRead, setRating, newBookOptions, createBooks } from "./services/editService";
+import { categoryTree, createCategory, renameCategory, setCategoryColor, setCategoryParent, removeCategory, moveCategory } from "./services/categoryService";
 import { listReviews, counts } from "./services/reviewService";
 import { listSeries, renameSeries, seriesBooks } from "./services/seriesService";
 import { readReviewFile, reviewFileVersion } from "./services/reviewFiles";
@@ -50,7 +50,8 @@ import {
 } from "./services/coverFetch";
 import type { Http } from "./services/coverFetch";
 import { getSetting, setSetting } from "./services/settingsService";
-import { readViews, saveViews } from "./services/viewService";
+import { readViews, saveViews, renameViewCategory } from "./services/viewService";
+import type { NewBookInput } from "../shared/bookCreation";
 import { backupReviewLibrary, autoBackupWithReviews, listReviewBackups, isReviewSnapshot, restoreReviewLibrary } from "./services/reviewBackup";
 import { reconcileReviewFiles } from "./services/reviewFiles";
 import { ReviewRuntime } from "./services/reviewRuntime";
@@ -1015,9 +1016,23 @@ function registerIpc(): void {
   });
   ipcMain.handle("books:copy", (_e, id: string) => copyBook(D(), id, coverDir()));
   ipcMain.handle("books:copyMany", (_e, ids: string[]) => copyBooks(D(), ids || [], coverDir()));
+  ipcMain.handle("books:newOptions", () => newBookOptions(D()));
+  ipcMain.handle("books:create", (_e, p: NewBookInput) => createBooks(D(), p));
   ipcMain.handle("cats:tree", () => categoryTree(D()));
-  ipcMain.handle("cats:create", (_e, name: string, parentId: number | null) => createCategory(D(), name, parentId ?? null));
-  ipcMain.handle("cats:rename", (_e, id: number, name: string) => renameCategory(D(), id, name));
+  ipcMain.handle("cats:create", (_e, name: string, parentId: number | null, color?: string) => createCategory(D(), name, parentId ?? null, color));
+  ipcMain.handle("cats:color", (_e, id: number, color: string) => setCategoryColor(D(), id, color));
+  ipcMain.handle("cats:rename", (_e, id: number, name: string) => {
+    const db = D();
+    const rename = db.transaction(() => {
+      const old = db.prepare("SELECT name FROM categories WHERE id = ?").get(id) as { name: string } | undefined;
+      const result = renameCategory(db, id, name);
+      if (result.ok && old) renameViewCategory(db, old.name, name.trim());
+      return { result, before: old?.name };
+    });
+    const { result, before } = rename();
+    if (result.ok && before && before !== name.trim()) win?.webContents.send("cats:renamed", before, name.trim());
+    return result;
+  });
   ipcMain.handle("cats:parent", (_e, id: number, parentId: number | null) => setCategoryParent(D(), id, parentId ?? null));
   ipcMain.handle("cats:remove", (_e, id: number) => removeCategory(D(), id));
   ipcMain.handle("cats:move", (_e, id: number, dir: -1 | 1) => moveCategory(D(), id, dir));

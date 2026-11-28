@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { DB } from "../db";
 import type { BookPatch, BookRow } from "../../shared/types";
+import type { NewBookInput, NewBookOptions, NewBookResult } from "../../shared/bookCreation";
+import { seriesDisplay } from "../../shared/seriesText";
 import { getBook } from "./bookService";
 import { copyCoverFor, renameCoverFor } from "./coverService";
 import { setCustom } from "./fieldService";
@@ -204,4 +207,99 @@ export function copyBooks(db: DB, ids: string[], coversDir = ""): BookRow[] {
   });
   run();
   return out;
+}
+
+/** 新增对话框里可选的两个来源：全部系列与全部作者 */
+export function newBookOptions(db: DB): NewBookOptions {
+  const series = db
+    .prepare("SELECT id, name, zh_name, media_type FROM series ORDER BY media_type, name")
+    .all() as any[];
+  const authors = db.prepare("SELECT id, name FROM authors ORDER BY name").all() as any[];
+  return {
+    series: series.map((s) => ({
+      id: s.id,
+      name: seriesDisplay(s.zh_name, s.name),
+      mediaType: s.media_type
+    })),
+    authors: authors.map((a) => ({ id: a.id, name: a.name }))
+  };
+}
+
+const NEW_BOOK_MODES = new Set<string>(["series-one", "series-many", "author", "blank"]);
+
+/**
+ * 新建条目。系列模式按系列定媒介，作者模式只挂那一位作者，空白模式什么都不带。
+ * 卷号不猜，留空让用户自己填；标题一律「未命名」，建完在表格里改。
+ * 系列名下的作者照第一本在架成员抄，省得每册都重选一遍。
+ * 整批在一个事务里建，任何一步失败全部回滚。
+ */
+export function createBooks(db: DB, input: NewBookInput): NewBookResult {
+  const p = input || ({} as NewBookInput);
+  if (!NEW_BOOK_MODES.has(String(p.mode))) return { ok: false, msg: "新增方式不对" };
+
+  let count = 1;
+  if (p.count !== undefined) {
+    const n = Number(p.count);
+    if (!Number.isInteger(n) || n < 1 || n > 100) return { ok: false, msg: "新增数量要在 1 到 100 之间" };
+    count = n;
+  }
+
+  let seriesId: number | null = null;
+  let mediaType = p.mediaType === "漫画" ? "漫画" : "小说";
+  let authorRows: any[] = [];
+
+  if (p.mode === "series-one" || p.mode === "series-many") {
+    const sid = Number(p.seriesId);
+    if (!Number.isInteger(sid) || sid <= 0) return { ok: false, msg: "请选择一个系列" };
+    const s = db.prepare("SELECT id, media_type FROM series WHERE id = ?").get(sid) as any;
+    if (!s) return { ok: false, msg: "这个系列不在库里" };
+    seriesId = s.id;
+    mediaType = s.media_type;
+    /* 第一本在架成员，卷号空的排最后，照着它抄作者 */
+    const first = db
+      .prepare(
+        "SELECT id FROM books WHERE series_id = ? AND deleted_at IS NULL ORDER BY series_index IS NULL, series_index, created_at, id LIMIT 1"
+      )
+      .get(sid) as any;
+    if (first) {
+      authorRows = db
+        .prepare("SELECT author_id, role, ord FROM book_authors WHERE book_id = ? ORDER BY ord")
+        .all(first.id) as any[];
+    }
+    /* 单本系列模式只建一本，多本才用 count */
+    if (p.mode === "series-one") count = 1;
+  } else if (p.mode === "author") {
+    const aid = Number(p.authorId);
+    if (!Number.isInteger(aid) || aid <= 0) return { ok: false, msg: "请选择一位作者" };
+    if (!db.prepare("SELECT id FROM authors WHERE id = ?").get(aid)) return { ok: false, msg: "这位作者不在库里" };
+    authorRows = [{ author_id: aid, role: "著", ord: 0 }];
+    count = 1;
+  } else {
+    count = 1;
+  }
+
+  const ids: string[] = [];
+  const insBook = db.prepare(
+    `INSERT INTO books (id, title, media_type, series_id, created_at, updated_at)
+     VALUES (?, '未命名', ?, ?, ?, ?)`
+  );
+  const insAuthor = db.prepare("INSERT OR IGNORE INTO book_authors (book_id, author_id, role, ord) VALUES (?, ?, ?, ?)");
+
+  const run = db.transaction(() => {
+    for (let i = 0; i < count; i++) {
+      const id = randomUUID();
+      const at = now();
+      insBook.run(id, mediaType, seriesId, at, at);
+      for (const a of authorRows) insAuthor.run(id, a.author_id, a.role || "著", a.ord);
+      rebuildFts(db, id);
+      ids.push(id);
+    }
+  });
+
+  try {
+    run();
+    return { ok: true, ids };
+  } catch (e) {
+    return { ok: false, msg: "新增失败：" + (e instanceof Error ? e.message : String(e)) };
+  }
 }

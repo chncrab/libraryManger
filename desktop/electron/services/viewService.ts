@@ -86,6 +86,28 @@ function writeViews(db: DB, views: LibraryView[]): void {
   setSetting(db, VIEW_CONFIG_KEY, JSON.stringify({ v: 1, views }));
 }
 
+/** 分类改名时，随库保存的视图预筛选继续引用同一个分类。 */
+export function renameViewCategory(db: DB, before: string, after: string): void {
+  if (before === after) return;
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(VIEW_CONFIG_KEY) as { value: string } | undefined;
+  if (!row) return;
+  let config: { v?: number; views?: LibraryView[] } | null;
+  try {
+    config = JSON.parse(row.value);
+  } catch {
+    return;
+  }
+  if (config?.v !== 1 || !Array.isArray(config.views)) return;
+  let changed = false;
+  for (const view of config.views) {
+    const filter = view?.filter;
+    if (!Array.isArray(filter?.categories) || !filter.categories.includes(before)) continue;
+    filter.categories = [...new Set(filter.categories.map((name) => name === before ? after : name))];
+    changed = true;
+  }
+  if (changed) setSetting(db, VIEW_CONFIG_KEY, JSON.stringify(config));
+}
+
 function corrupt(msg?: string): ViewConfigResult {
   return {
     views: [],

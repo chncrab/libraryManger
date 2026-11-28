@@ -97,12 +97,6 @@ const js = async (expr) => {
   return r.result?.value;
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const clickText = (sel, text) =>
-  js(
-    `(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => e.textContent.trim() === ${JSON.stringify(
-      text
-    )}); if (!el) return false; el.click(); return true; })()`
-  );
 /* 系列集合与书架现在都在书库标签栏里，顶栏 .seg 只剩书评/阅读 */
 const clickTab = (name) =>
   js(
@@ -206,21 +200,32 @@ const other = JSON.parse(
 );
 console.log("  样本 " + s.label + "（" + s.name + "）");
 
-/* ---- 编辑态 ---- */
-await clickText(".dh .mini", "改名");
+/* ---- 标题分两行：上面译名，下面原名 ---- */
+const nameLines = await js(`(() => {
+  const h = document.querySelector('.dh .sname');
+  if (!h) return -1;
+  return h.querySelectorAll('.sname-zh, .sname-orig').length;
+})()`);
+check("标题分译名和原名两行", nameLines === 2, String(nameLines));
+
+/* ---- 点译名：只开译名那一个输入框 ---- */
+await js(`document.querySelector('.dh .sname-zh').click()`);
 await wait(400);
-const inputs = await js(`document.querySelectorAll('.sedit input').length`);
-check("点改名出两个输入框", inputs === 2, String(inputs));
+const openZh = await js(`(() => {
+  const box = document.querySelectorAll('.dh .sname .sname-in');
+  return box.length === 1 && !box[0].classList.contains('sname-orig');
+})()`);
+check("点译名只开译名输入", openZh === true);
 
 const zhNew = s.zhName + "冒烟";
-await setInput(".sedit input", zhNew, 0);
+await setInput(".sname-in", zhNew);
 await wait(250);
-const typed = await js(`document.querySelectorAll('.sedit input')[0].value`);
+const typed = await js(`document.querySelector('.dh .sname .sname-in').value`);
 check("译名框能写", typed === zhNew, typed);
 
-/* ---- 取消不写库 ---- */
-await clickText(".sedit-acts .mini", "取消");
-await wait(600);
+/* ---- Esc 取消不写库 ---- */
+await key("Escape");
+await wait(400);
 const afterCancel = JSON.parse(
   (await js(`(async () => {
     const list = await window.api.seriesList('小说');
@@ -229,15 +234,18 @@ const afterCancel = JSON.parse(
   })()`)) || "{}"
 );
 check("取消没写库", afterCancel.zhName === s.zhName, afterCancel.zhName);
-check("取消后编辑态收掉", (await js(`!document.querySelector('.sedit')`)) === true);
+check(
+  "取消后编辑态收掉",
+  (await js(`!document.querySelector('.dh .sname .sname-in') && !!document.querySelector('.drawer.on')`)) === true
+);
 
-/* ---- 保存译名 ---- */
-await clickText(".dh .mini", "改名");
+/* ---- 失焦存译名 ---- */
+await js(`document.querySelector('.dh .sname-zh').click()`);
 await wait(300);
-await setInput(".sedit input", zhNew, 0);
+await setInput(".sname-in", zhNew);
 await wait(200);
-await clickText(".sedit-acts .mini", "保存");
-await wait(1200);
+await js(`document.querySelector('.dh .sname .sname-in').blur()`);
+await wait(1400);
 const saved = JSON.parse(
   (await js(`(async () => {
     const list = await window.api.seriesList('小说');
@@ -249,15 +257,15 @@ check("译名存进库了", saved.zhName === zhNew, saved.zhName);
 check("原名没被连带改", saved.name === s.name, saved.name);
 const headNow = String((await js(`(document.querySelector('.dh h2')||{}).textContent||''`)) || "");
 check("标题跟着变了", headNow.includes(zhNew), headNow.trim().slice(0, 30));
-check("保存后收起编辑态", (await js(`!document.querySelector('.sedit')`)) === true);
+check("保存后收起编辑态", (await js(`!document.querySelector('.dh .sname .sname-in')`)) === true);
 
 /* ---- 译名撞名只提示不拦 ---- */
-await clickText(".dh .mini", "改名");
+await js(`document.querySelector('.dh .sname-zh').click()`);
 await wait(300);
-await setInput(".sedit input", other.zhName, 0);
+await setInput(".sname-in", other.zhName);
 await wait(200);
-await clickText(".sedit-acts .mini", "保存");
-await wait(1200);
+await js(`document.querySelector('.dh .sname .sname-in').blur()`);
+await wait(1400);
 const noteText = String((await js(`(document.querySelector('.snote')||{}).textContent||''`)) || "");
 const clashSaved = JSON.parse(
   (await js(`(async () => {
@@ -270,13 +278,18 @@ check("译名撞名照样存进去", clashSaved.zhName === other.zhName, clashSa
 check("撞名给了一句提示", noteText.length > 0, noteText);
 
 /* ---- 原名撞键被拒 ---- */
-await clickText(".dh .mini", "改名");
+await js(`document.querySelector('.dh .sname-orig').click()`);
 await wait(300);
-await setInput(".sedit input", other.name, 1);
+const openOrig = await js(`(() => {
+  const box = document.querySelectorAll('.dh .sname .sname-in');
+  return box.length === 1 && box[0].classList.contains('sname-orig');
+})()`);
+check("点原名只开原名输入", openOrig === true);
+await setInput(".sname-in", other.name);
 await wait(200);
-await clickText(".sedit-acts .mini", "保存");
-await wait(1200);
-const errText = String((await js(`(document.querySelector('.sedit-err')||{}).textContent||''`)) || "");
+await js(`document.querySelector('.dh .sname .sname-in').blur()`);
+await wait(1400);
+const errText = String((await js(`(document.querySelector('.sname-err')||{}).textContent||''`)) || "");
 const nameKept = JSON.parse(
   (await js(`(async () => {
     const list = await window.api.seriesList('小说');
@@ -286,11 +299,14 @@ const nameKept = JSON.parse(
 );
 check("原名撞键被拒并说明理由", errText.length > 0, errText.slice(0, 40));
 check("被拒后库里原名没变", nameKept.name === s.name, nameKept.name);
-check("被拒后还留在编辑态", (await js(`!!document.querySelector('.sedit')`)) === true);
+check("被拒后还留在编辑态", (await js(`!!document.querySelector('.dh .sname .sname-in.sname-orig')`)) === true);
 
 /* ---- Esc 两级 ---- */
 await key("Escape");
-check("Esc 先退出编辑", (await js(`!document.querySelector('.sedit') && !!document.querySelector('.drawer.on')`)) === true);
+check(
+  "Esc 先退出编辑",
+  (await js(`!document.querySelector('.dh .sname .sname-in') && !!document.querySelector('.drawer.on')`)) === true
+);
 await key("Escape");
 check("再按 Esc 关面板", (await js(`!document.querySelector('.drawer.on')`)) === true);
 

@@ -5,7 +5,7 @@ import type { CatNode, CatResult } from "../../shared/types";
 export function categoryTree(db: DB): CatNode[] {
   const rows = db
     .prepare(
-      `SELECT c.id, c.name, c.parent_id AS parentId, c.tier, c.ord,
+      `SELECT c.id, c.name, c.color, c.parent_id AS parentId, c.tier, c.ord,
               (SELECT COUNT(DISTINCT bc.book_id)
                  FROM book_categories bc JOIN books b ON b.id = bc.book_id AND b.deleted_at IS NULL
                 WHERE bc.category_id IN (
@@ -33,6 +33,12 @@ function nameTaken(db: DB, name: string, selfId = 0): boolean {
   return !!r;
 }
 
+/** 颜色只收空串（不设色）或严格的 #RRGGBB，其余一律算格式错 */
+function checkColor(color: string | undefined): string | null {
+  if (!color) return "";
+  return /^#[0-9A-Fa-f]{6}$/.test(color) ? color : null;
+}
+
 function nextOrd(db: DB, parentId: number | null): number {
   const r = db
     .prepare("SELECT COALESCE(MAX(ord), 0) AS m FROM categories WHERE " + (parentId ? "parent_id = ?" : "parent_id IS NULL"))
@@ -40,9 +46,11 @@ function nextOrd(db: DB, parentId: number | null): number {
   return Number(r.m) + 1;
 }
 
-export function createCategory(db: DB, name: string, parentId: number | null): CatResult {
+export function createCategory(db: DB, name: string, parentId: number | null, color = ""): CatResult {
   const n = name.trim();
   if (!n) return { ok: false, msg: "名字不能为空" };
+  const col = checkColor(color);
+  if (col === null) return { ok: false, msg: "颜色格式应为 #RRGGBB" };
   if (nameTaken(db, n)) return { ok: false, msg: "已经有叫「" + n + "」的分类" };
   if (parentId) {
     const p = db.prepare("SELECT tier FROM categories WHERE id = ?").get(parentId) as any;
@@ -52,10 +60,17 @@ export function createCategory(db: DB, name: string, parentId: number | null): C
   }
   const id = Number(
     db
-      .prepare("INSERT INTO categories (name, tier, ord, parent_id) VALUES (?, ?, ?, ?)")
-      .run(n, depthOf(db, parentId), nextOrd(db, parentId), parentId || null).lastInsertRowid
+      .prepare("INSERT INTO categories (name, tier, ord, parent_id, color) VALUES (?, ?, ?, ?, ?)")
+      .run(n, depthOf(db, parentId), nextOrd(db, parentId), parentId || null, col).lastInsertRowid
   );
   return { ok: true, id };
+}
+
+export function setCategoryColor(db: DB, id: number, color: string): CatResult {
+  const col = checkColor(color);
+  if (col === null) return { ok: false, msg: "颜色格式应为 #RRGGBB" };
+  const info = db.prepare("UPDATE categories SET color = ? WHERE id = ?").run(col, id);
+  return info.changes ? { ok: true, id } : { ok: false, msg: "分类不存在" };
 }
 
 export function renameCategory(db: DB, id: number, name: string): CatResult {

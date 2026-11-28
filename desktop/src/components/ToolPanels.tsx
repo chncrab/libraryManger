@@ -1,4 +1,5 @@
-import type { AdvFilter, FieldDef, FieldFilter } from "../../shared/types";
+import { EMPTY_ADV, type AdvFilter, type FieldDef } from "../../shared/types";
+import { FILTER_OPS, filterOpsFor, ruleHasValue, type BookFilterGroup, type BookFilterRule, type FilterOp } from "../../shared/filterRules";
 import { DEFAULT_HIDDEN } from "../columns";
 
 /** 工具栏下方浮出的面板，列设置与高级筛选共用外壳 */
@@ -21,7 +22,11 @@ export function ToolPanel({
   return (
     <>
       <div className="tp-mask" onClick={onClose} />
-      <div className="tpanel" style={{ width, left: pos ? pos.x : undefined, top: pos ? pos.y : undefined }}>
+      <div className="tpanel" style={{
+        width,
+        left: pos ? `min(${pos.x}px, calc(100vw - ${width + 8}px))` : undefined,
+        top: pos?.y
+      }}>
         <div className="tp-h">
           <b>{title}</b>
           {hint ? <span className="dim">{hint}</span> : null}
@@ -79,199 +84,93 @@ export function ColumnPanel({
   );
 }
 
-const num = (v: string): number | null => (v.trim() === "" ? null : Number(v));
-
-/** 一个字段的筛选行，控件按类型分派 */
-function FilterRow({
-  field,
-  cur,
-  onChange
-}: {
-  field: FieldDef;
-  cur: FieldFilter | undefined;
-  onChange: (f: FieldFilter | null) => void;
-}) {
-  const set = (p: Partial<FieldFilter>) => onChange({ ...(cur || { key: field.key, op: "like" }), ...p });
-
-  if (field.type === "switch") {
-    const v = cur ? cur.op : "";
-    return (
-      <div className="tp-line">
-        <button className={"mini xs" + (v === "yes" ? " on" : "")} onClick={() => onChange({ key: field.key, op: "yes" })}>
-          是
-        </button>
-        <button className={"mini xs" + (v === "no" ? " on" : "")} onClick={() => onChange({ key: field.key, op: "no" })}>
-          否
-        </button>
-        <button className={"mini xs" + (v === "" ? " on" : "")} onClick={() => onChange(null)}>
-          不限
-        </button>
-      </div>
-    );
-  }
-
-  if (field.type === "number" || field.type === "rating" || field.type === "date") {
-    const isDate = field.type === "date";
-    return (
-      <div className="tp-line">
-        <input
-          type={isDate ? "date" : "number"}
-          placeholder="从"
-          value={cur?.a ?? ""}
-          onChange={(e) => set({ op: "between", a: e.target.value })}
-        />
-        <span className="dim">到</span>
-        <input
-          type={isDate ? "date" : "number"}
-          placeholder="到"
-          value={cur?.b ?? ""}
-          onChange={(e) => set({ op: "between", b: e.target.value })}
-        />
-      </div>
-    );
-  }
-
-  if (field.type === "select" || field.type === "multiselect") {
-    return (
-      <div className="tp-line">
-        <select value={cur?.a ?? ""} onChange={(e) => (e.target.value ? set({ op: "has", a: e.target.value }) : onChange(null))}>
-          <option value="">不限</option>
-          {field.options.map((o) => (
-            <option key={o.id} value={o.name}>
-              {o.name}
-            </option>
-          ))}
-        </select>
-      </div>
-    );
-  }
-
-  return (
-    <div className="tp-line">
-      <input
-        placeholder="含关键词"
-        value={cur?.a ?? ""}
-        onChange={(e) => (e.target.value ? set({ op: "like", a: e.target.value }) : onChange(null))}
-      />
-    </div>
-  );
-}
-
 export function AdvPanel({
   adv,
   fields,
+  categories = [],
   onChange,
   onClose,
   pos
 }: {
   adv: AdvFilter;
   fields: FieldDef[];
+  categories?: string[];
   onChange: (a: AdvFilter) => void;
   onClose: () => void;
   pos?: { x: number; y: number } | null;
 }) {
-  const set = (p: Partial<AdvFilter>) => onChange({ ...adv, ...p });
-  const fvals = adv.fvals || [];
-  const setField = (key: string, f: FieldFilter | null) => {
-    const rest = fvals.filter((x) => x.key !== key);
-    set({ fvals: f ? [...rest, f] : rest });
-  };
-  const dirty =
-    adv.ratingMin != null ||
-    adv.ratingMax != null ||
-    adv.yearFrom != null ||
-    adv.yearTo != null ||
-    adv.hasReview !== null ||
-    !!adv.note.trim() ||
-    fvals.length > 0;
-
-  const filtrable = fields.filter((f) => !f.deletedAt && f.filterable);
+  const group = adv.group || { join: "and" as const, rules: [] };
+  const available = fields.filter((f) => !f.deletedAt && (f.builtin || f.filterable));
+  const publish = available.find((f) => f.key === "publishDate");
+  if (publish) available.push({ ...publish, key: "publishYear", label: "出版年", type: "number" });
+  const setGroup = (next: BookFilterGroup) => onChange({ ...adv, group: next });
+  const setRules = (rules: BookFilterRule[]) => setGroup({ ...group, rules });
+  const revise = (index: number, rule: BookFilterRule) =>
+    setRules(group.rules.map((entry, i) => i === index ? rule : entry));
 
   return (
-    <ToolPanel title="高级筛选" hint="留空表示不限" onClose={onClose} width={312} pos={pos}>
-      <div className="tp-lab">评分区间</div>
+    <ToolPanel title="高级筛选" onClose={onClose} width={520} pos={pos}>
       <div className="tp-line">
-        <input
-          type="number"
-          step="0.1"
-          min="0"
-          max="10"
-          placeholder="最低"
-          value={adv.ratingMin ?? ""}
-          onChange={(e) => set({ ratingMin: num(e.target.value) })}
-        />
-        <span className="dim">到</span>
-        <input
-          type="number"
-          step="0.1"
-          min="0"
-          max="10"
-          placeholder="最高"
-          value={adv.ratingMax ?? ""}
-          onChange={(e) => set({ ratingMax: num(e.target.value) })}
-        />
-      </div>
-
-      <div className="tp-lab">出版年</div>
-      <div className="tp-line">
-        <input
-          type="number"
-          placeholder="从"
-          value={adv.yearFrom ?? ""}
-          onChange={(e) => set({ yearFrom: num(e.target.value) })}
-        />
-        <span className="dim">到</span>
-        <input type="number" placeholder="到" value={adv.yearTo ?? ""} onChange={(e) => set({ yearTo: num(e.target.value) })} />
-      </div>
-
-      <div className="tp-lab">书评</div>
-      <div className="tp-line">
-        {[
-          { k: null, label: "不限" },
-          { k: true, label: "有书评" },
-          { k: false, label: "没书评" }
-        ].map((o) => (
-          <button
-            key={String(o.k)}
-            className={"mini xs" + (adv.hasReview === o.k ? " on" : "")}
-            onClick={() => set({ hasReview: o.k as boolean | null })}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="tp-lab">备注含关键词</div>
-      <div className="tp-line">
-        <input value={adv.note} placeholder="例如 限定版" onChange={(e) => set({ note: e.target.value })} />
-      </div>
-
-      {filtrable.length ? (
-        <>
-          <div className="tp-lab">字段</div>
-          {filtrable.map((f) => (
-            <div key={f.key} className="tp-field">
-              <span className="tp-fname">{f.label}</span>
-              <FilterRow field={f} cur={fvals.find((x) => x.key === f.key)} onChange={(x) => setField(f.key, x)} />
-            </div>
-          ))}
-        </>
-      ) : null}
-
-      <div className="tp-foot">
-        <button
-          className="mini xs"
-          disabled={!dirty}
-          onClick={() =>
-            onChange({ ratingMin: null, ratingMax: null, yearFrom: null, yearTo: null, hasReview: null, note: "", fvals: [] })
-          }
+        <select
+          aria-label="条件组合"
+          value={group.join}
+          onChange={(e) => setGroup({ ...group, join: e.target.value === "or" ? "or" : "and" })}
         >
-          全部清空
-        </button>
-        <span className="spacer" />
-        <button className="mini xs" onClick={onClose}>
-          收起
-        </button>
+          <option value="and">且 · 满足全部条件</option>
+          <option value="or">或 · 满足任一条件</option>
+        </select>
+      </div>
+      {group.rules.map((rule, index) => {
+        const field = available.find((f) => f.key === rule.key);
+        const ops = field ? filterOpsFor(field) : [];
+        const options = field?.key === "categories" ? categories
+          : field?.type === "switch" ? ["1", "0"]
+          : field?.options.map((o) => o.name) || [];
+        const type = field?.type === "date" ? "date"
+          : field?.type === "number" || field?.type === "rating" ? "number" : "text";
+        const suffix = " " + (index + 1);
+        return (
+          <div className="tp-line" key={index}>
+            <select aria-label={"字段" + suffix} value={rule.key} onChange={(e) => {
+              const next = available.find((f) => f.key === e.target.value);
+              if (next) revise(index, { key: next.key, op: filterOpsFor(next)[0] });
+            }}>
+              <option value="" disabled>选择字段</option>
+              {available.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+            <select
+              aria-label={"运算符" + suffix}
+              disabled={!field}
+              value={field ? rule.op : ""}
+              onChange={(e) => revise(index, { ...rule, op: e.target.value as FilterOp })}
+            >
+              {!field ? <option value="">选择运算符</option> : null}
+              {ops.map((op) => <option key={op} value={op}>{FILTER_OPS[op]}</option>)}
+            </select>
+            {field && ruleHasValue(rule.op) ? (
+              options.length ? (
+                <select aria-label={"值" + suffix} value={rule.value ?? ""} onChange={(e) => revise(index, { ...rule, value: e.target.value })}>
+                  <option value="">选择值</option>
+                  {options.map((value) => <option key={value} value={value}>{field.type === "switch" ? (value === "1" ? "是" : "否") : value}</option>)}
+                </select>
+              ) : (
+                <input
+                  aria-label={"值" + suffix}
+                  type={type}
+                  step={type === "number" ? "any" : undefined}
+                  placeholder="输入值"
+                  value={rule.value ?? ""}
+                  onChange={(e) => revise(index, { ...rule, value: e.target.value })}
+                />
+              )
+            ) : <span className="spacer" />}
+            <button className="mini xs" aria-label={"删除条件" + suffix} onClick={() => setRules(group.rules.filter((_, i) => i !== index))}>×</button>
+          </div>
+        );
+      })}
+      <div className="tp-foot">
+        <button className="mini xs" onClick={() => setRules([...group.rules, { key: "", op: "contains" }])}>添加条件</button>
+        <button className="mini xs" disabled={!group.rules.length} onClick={() => onChange({ ...EMPTY_ADV })}>全部清空</button>
       </div>
     </ToolPanel>
   );

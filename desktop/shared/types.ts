@@ -1,6 +1,8 @@
 /** 主进程与渲染进程共用的类型。改这里两边同时生效。 */
 
 import type { BookSearchField } from "./bookSearch";
+import type { BookFilterGroup } from "./filterRules";
+import type { NewBookInput, NewBookOptions, NewBookResult } from "./bookCreation";
 
 export type MediaType = "小说" | "漫画";
 
@@ -149,6 +151,7 @@ export interface BookRow {
 
 /** 高级筛选的区间与存在性条件，面板里填，空值表示不限 */
 export interface AdvFilter {
+  group?: BookFilterGroup;
   ratingMin: number | null;
   ratingMax: number | null;
   yearFrom: number | null;
@@ -175,6 +178,8 @@ export const EMPTY_ADV: AdvFilter = {
 export type ReadFilter = "all" | "read" | "unread" | "rated";
 
 export interface BookQuery {
+  /** 当前录入的书目临时排到表格顶部，后续仍按视图顺序排列。 */
+  firstIds?: string[];
   q?: string;
   /** 视图预设关键词。与 q 各自成一条条件，两组都要命中 */
   presetQ?: string;
@@ -377,6 +382,7 @@ export interface ReadStats {
 
 export interface FacetItem {
   name: string;
+  color?: string;
   n: number;
   tier?: number;
   ord?: number;
@@ -586,6 +592,7 @@ export interface BookPatch {
 export interface CatNode {
   id: number;
   name: string;
+  color?: string;
   parentId: number | null;
   tier: number;
   ord: number;
@@ -727,8 +734,12 @@ export interface BooklibApi {
   restoreBook(id: string): Promise<boolean>;
   copyBook(id: string): Promise<BookRow | null>;
   copyBooks(ids: string[]): Promise<BookRow[]>;
+  newBookOptions(): Promise<NewBookOptions>;
+  createBooks(input: NewBookInput): Promise<NewBookResult>;
   categoryTree(): Promise<CatNode[]>;
-  createCategory(name: string, parentId: number | null): Promise<CatResult>;
+  createCategory(name: string, parentId: number | null, color?: string): Promise<CatResult>;
+  setCategoryColor(id: number, color: string): Promise<CatResult>;
+  onCategoryRenamed(cb: (before: string, after: string) => void): () => void;
   renameCategory(id: number, name: string): Promise<CatResult>;
   setCategoryParent(id: number, parentId: number | null): Promise<CatResult>;
   removeCategory(id: number): Promise<CatResult>;

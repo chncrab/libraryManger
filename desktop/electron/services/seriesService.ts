@@ -95,7 +95,18 @@ export function listSeries(db: DB, arg: string | SeriesQuery = ""): SeriesInfo[]
 
 /** 系列内的书按册序排，方便弹层里从上到下看 */
 export function seriesBooks(db: DB, id: number): BookRow[] {
-  return listBooks(db, { seriesId: id, sorts: [{ key: "index", dir: 1 }], limit: 2000 }).rows;
+  const read = db.transaction(() => {
+    const query: BookQuery = { seriesId: id, sorts: [{ key: "index", dir: 1 }], limit: 2000 };
+    const first = listBooks(db, query);
+    const rows = first.rows;
+    while (rows.length < first.total) {
+      const next = listBooks(db, { ...query, offset: rows.length }).rows;
+      if (!next.length) break;
+      rows.push(...next);
+    }
+    return rows;
+  });
+  return read();
 }
 
 /** 系列的主作者：册序最靠前那本的作者。系列总评的文件名拿它起头 */

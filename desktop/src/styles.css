@@ -14,6 +14,8 @@
   --green: #5f9a6b;
   --blue: #5b8bb5;
   --r: 8px;
+  /* 顶栏（标签条）的高度，抽屉等贴顶的浮层共用这一份 */
+  --titlebar-height: max(36px, calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px)));
   color-scheme: dark;
 }
 
@@ -68,6 +70,22 @@ button {
 .search:focus { border-color: var(--acc); }
 .book-search-box { position: relative; flex: 0 1 300px; min-width: 130px; }
 .book-search-box .search { width: 100%; display: block; }
+/* 搜索框与「清除条件」摆成一组：输入框吃掉剩下的宽度，按钮宽度自己撑住 */
+.book-search-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 320px;
+}
+.book-search-group .book-search-box { flex: 1; min-width: 130px; }
+.book-search-group .mini { height: 28px; flex: none; white-space: nowrap; }
+.book-search-group .mini:disabled {
+  opacity: 0.45;
+  cursor: default;
+  border-color: var(--line);
+  color: var(--fg3);
+}
+.book-search-group .mini:disabled:hover { border-color: var(--line); color: var(--fg3); }
 .book-search-options {
   position: absolute;
   z-index: 25;
@@ -246,6 +264,7 @@ button {
 }
 .table tr.on td { background: var(--bg3); }
 .table tr:hover td { background: var(--bg2); }
+.table td.active-cell { box-shadow: inset 0 0 0 1px var(--blue); }
 .table td.title { color: var(--fg); }
 .dim { color: var(--fg3); }
 
@@ -295,9 +314,10 @@ button {
   z-index: 40;
 }
 .mask.on { opacity: 1; pointer-events: auto; }
+.mask.cat-tag-mask { z-index: 93; }
 .drawer {
   position: fixed;
-  top: 0;
+  top: var(--titlebar-height);
   right: 0;
   bottom: 0;
   width: 420px;
@@ -315,6 +335,8 @@ button {
 .dwrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dh { display: flex; align-items: center; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
 .dh h2 { margin: 0; font-size: 15px; font-weight: normal; flex: 1; line-height: 1.45; word-break: break-word; }
+/* 系列标题：h2 里上下两行名字，报错放在 h2 外的同一栏 */
+.dht { flex: 1; min-width: 0; }
 .db { flex: 1; overflow-y: auto; padding: 14px 16px 30px; }
 .dtop { display: flex; gap: 12px; margin-bottom: 12px; }
 .dc { width: 104px; flex: none; border-radius: 5px; border: 1px solid var(--line); display: block; }
@@ -732,8 +754,6 @@ button {
 .ctl input[type="date"] { color-scheme: dark; }
 .ctl .num { width: 72px; flex: none; }
 .drow2 { display: flex; gap: 8px; align-items: center; }
-/* 所属系列的原名，跟在译名后头，长了就截断，不挤走两个输入框 */
-.dorig { font-size: 11.5px; min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 系列原名单独一行，下面跟一句说明；改不动时那句话换成理由，能换行不受挤 */
 .dcol { display: flex; flex-direction: column; gap: 3px; }
 .dcol-hint, .dcol-err { font-size: 11.5px; line-height: 1.55; }
@@ -899,6 +919,10 @@ button {
   color-scheme: light;
 }
 [data-theme="light"] .mask { background: rgba(40, 34, 26, 0.28); }
+/* 书籍与系列抽屉：顶栏那行（.viewtabs）保持原样，遮罩只暗第二行和主内容。
+   用 padding 让上层仍留在命中区里，点那儿照样能关抽屉；放在主题规则之后，
+   避免 light 的 background 简写把 background-clip 重置回去 */
+.mask.drawer-mask { padding-top: var(--titlebar-height); background-clip: content-box; }
 [data-theme="light"] .ctx,
 [data-theme="light"] .tpanel,
 [data-theme="light"] .mp-pop { box-shadow: 0 10px 26px rgba(60, 48, 32, 0.18); }
@@ -970,33 +994,44 @@ button {
 }
 .sb-foot .mini { flex: 1; justify-content: center; }
 
-/* 系列改名。两个名字一上一下，原名下面那句话交代它会动系列总评的文件名 */
-.sedit {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 10px 14px 12px;
-  border-bottom: 1px solid var(--line);
+/* 系列标题：译名在上、原名在下，各自点开就地改 */
+.sname { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sname-btn {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.sedit-r { display: flex; align-items: center; gap: 8px; }
-.sedit-l { width: 62px; flex: none; font-size: 12px; color: var(--fg3); }
-.sedit input {
-  flex: 1;
+.sname-btn:hover { color: var(--acc); }
+.sname-btn:focus-visible { outline: 1px solid var(--acc); outline-offset: 2px; }
+.sname-zh { font-size: 15px; line-height: 1.45; }
+.sname-orig { font-size: 11.5px; line-height: 1.45; color: var(--fg3); }
+.sname-in {
+  width: 100%;
   min-width: 0;
-  height: 26px;
-  padding: 0 7px;
+  height: 24px;
+  padding: 0 6px;
   background: var(--bg);
-  border: 1px solid var(--line2);
-  border-radius: 5px;
+  border: 1px solid var(--acc);
+  border-radius: 4px;
   color: var(--fg);
-  font-size: 12.5px;
-  font-family: inherit;
+  font: inherit;
+  font-size: 13px;
 }
-.sedit input:focus { outline: none; border-color: var(--acc); }
-.sedit-hint { margin: 0; font-size: 11px; line-height: 1.65; color: var(--fg3); }
-.sedit-err { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--red); }
-.sedit-acts { display: flex; gap: 8px; }
+.sname-in.sname-orig { height: 22px; font-size: 12px; }
+.sname-in:focus { outline: none; }
+.sname-err { font-size: 11.5px; line-height: 1.5; color: var(--red); }
 .snote { flex: none; margin: 9px 14px 0; font-size: 11.5px; line-height: 1.6; color: var(--acc2); }
 
 /* ---------- 排序圆片 ---------- */
@@ -1063,7 +1098,7 @@ button {
 .tp-tick { width: 12px; color: var(--acc2); }
 .tp-lab { margin-top: 8px; font-size: 10.5px; color: var(--fg3); letter-spacing: 0.5px; }
 .tp-line { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.tp-line input {
+.tp-line input, .tp-line select {
   flex: 1;
   min-width: 0;
   height: 24px;
@@ -1074,7 +1109,7 @@ button {
   color: var(--fg);
   font-size: 12px;
 }
-.tp-line input:focus { outline: none; border-color: var(--acc); }
+.tp-line input:focus, .tp-line select:focus { outline: none; border-color: var(--acc); }
 .tp-foot { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
 
 .mini.on { border-color: var(--acc); color: var(--acc2); }
@@ -2233,7 +2268,7 @@ button {
   gap: 4px;
   flex: none;
   min-width: 0;
-  height: max(36px, calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px)));
+  height: var(--titlebar-height);
   padding: 0 calc(var(--caption-width) + 42px) 0 calc(env(titlebar-area-x, 0px) + 10px);
   background: var(--bg2);
   border-bottom: 1px solid var(--line);

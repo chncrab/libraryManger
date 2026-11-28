@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import api from "../api";
 import type { CatNode } from "../../shared/types";
+import { categoryTagStyle } from "./CategoryTagDialog";
 
 interface Props {
   onClose: () => void;
@@ -11,8 +12,10 @@ interface Props {
 export default function CategoryAdmin({ onClose, onChanged }: Props) {
   const [list, setList] = useState<CatNode[]>([]);
   const [newRoot, setNewRoot] = useState("");
+  const [rootColor, setRootColor] = useState("");
   const [childOf, setChildOf] = useState<number | null>(null);
   const [childName, setChildName] = useState("");
+  const [childColor, setChildColor] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [msg, setMsg] = useState("");
@@ -52,14 +55,17 @@ export default function CategoryAdmin({ onClose, onChanged }: Props) {
 
   const addRoot = async () => {
     if (!newRoot.trim()) return;
-    const r = await api.createCategory(newRoot, null);
+    const r = await api.createCategory(newRoot, null, rootColor);
     done(r);
-    if (r.ok) setNewRoot("");
+    if (r.ok) {
+      setNewRoot("");
+      setRootColor("");
+    }
   };
 
   const addChild = async (pid: number | null) => {
     if (!pid || !childName.trim()) return;
-    const r = await api.createCategory(childName, pid);
+    const r = await api.createCategory(childName, pid, childColor);
     done(r);
     if (r.ok) {
       setChildName("");
@@ -94,6 +100,7 @@ export default function CategoryAdmin({ onClose, onChanged }: Props) {
       ) : (
         <span
           className="cad-n"
+          style={categoryTagStyle(c.color)}
           onDoubleClick={() => {
             setEditId(c.id);
             setEditName(c.name);
@@ -141,6 +148,7 @@ export default function CategoryAdmin({ onClose, onChanged }: Props) {
             onClick={() => {
               setChildOf(childOf === c.id ? null : c.id);
               setChildName("");
+              setChildColor("");
             }}
           >
             ＋
@@ -163,6 +171,7 @@ export default function CategoryAdmin({ onClose, onChanged }: Props) {
               if (e.key === "Escape") setChildOf(null);
             }}
           />
+          <input type="color" aria-label="小标签背景色" value={childColor || "#856142"} onChange={(e) => setChildColor(e.target.value)} />
           <button className="mini" onClick={() => addChild(c.id)}>
             建
           </button>
@@ -207,6 +216,7 @@ export default function CategoryAdmin({ onClose, onChanged }: Props) {
               if (e.key === "Enter") addRoot();
             }}
           />
+          <input type="color" aria-label="大分类背景色" value={rootColor || "#856142"} onChange={(e) => setRootColor(e.target.value)} />
           <button className="mini" onClick={addRoot}>
             新建
           </button>

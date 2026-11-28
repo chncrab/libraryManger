@@ -1,4 +1,5 @@
 import type { DB } from "../db";
+import { filterRulesWhere } from "./filterRules";
 import type { BookQuery, BookRow, ListResult, Facets, SortSpec } from "../../shared/types";
 import { BOOK_SEARCH_FIELDS, parseBookSearch, type BookSearchFieldTerm } from "../../shared/bookSearch";
 import { seriesDisplay } from "../../shared/seriesText";
@@ -293,6 +294,11 @@ export function bookWhere(
 
   /* 高级筛选：区间与存在性条件，留空的那一项不加 */
   const adv = q.adv;
+  const group = filterRulesWhere(db, adv?.group, alias);
+  if (group.sql) {
+    where.push(group.sql);
+    params.push(...group.params);
+  }
   if (adv) {
     if (adv.ratingMin != null) (where.push(`${alias}.rating >= ?`), params.push(adv.ratingMin));
     if (adv.ratingMax != null) (where.push(`${alias}.rating <= ?`), params.push(adv.ratingMax));
@@ -341,7 +347,13 @@ export function listBooks(db: DB, q: BookQuery): ListResult {
   const built = bookWhere(db, q, "b");
   const params = built.params;
   const sqlWhere = built.sql ? " WHERE " + built.sql : "";
-  const order = orderBy(db, q.sorts);
+  const ids = Array.isArray(q.firstIds)
+    ? [...new Set(q.firstIds.filter((id) => typeof id === "string"))].slice(0, 200)
+    : [];
+  const priority = ids.length
+    ? `CASE b.id ${ids.map((_, index) => "WHEN ? THEN " + index).join(" ")} ELSE ${ids.length} END, `
+    : "";
+  const order = priority + orderBy(db, q.sorts);
   const limit = Math.min(Math.max(q.limit || 120, 1), 2000);
   const offset = Math.max(q.offset || 0, 0);
 
@@ -350,7 +362,7 @@ export function listBooks(db: DB, q: BookQuery): ListResult {
     db,
     db
       .prepare(`${SELECT_ROW}${sqlWhere} ORDER BY ${order} LIMIT ? OFFSET ?`)
-      .all(...params, limit, offset)
+      .all(...params, ...ids, limit, offset)
       .map(toRow)
   );
 
@@ -498,7 +510,7 @@ export function facets(db: DB, media = ""): Facets {
        数字按整个子树去重统计，一本书挂了同组的两个标签也只算一次，
        否则父级分类会把同一本书重复计入，合计超过书库本身的册数 */
     categories: all(
-      `SELECT c.id, c.name, c.tier, c.ord, c.parent_id AS parentId,
+      `SELECT c.id, c.name, c.color, c.tier, c.ord, c.parent_id AS parentId,
               (SELECT COUNT(DISTINCT bc2.book_id)
                  FROM book_categories bc2
                  JOIN books b2 ON b2.id = bc2.book_id AND b2.deleted_at IS NULL${on ? " AND b2.media_type = ?" : ""}

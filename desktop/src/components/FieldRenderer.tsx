@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { BookPatch, BookRow, FieldDef } from "../../shared/types";
 import { MultiPick, SinglePick, type PickItem } from "./Pickers";
+import { categoryTagStyle } from "./CategoryTagDialog";
 import { coverUrl } from "../api";
 
 /**
@@ -60,7 +61,7 @@ export function valuesOf(f: FieldDef, b: BookRow): string[] {
 /** 表格与详情里显示的那一行字 */
 export function valuesText(f: FieldDef, b: BookRow): string {
   const v = valuesOf(f, b);
-  if (!v.length) return "";
+  if (!v.length) return f.patchKey === "readStart" || f.patchKey === "readDate" ? "-" : "";
   if (f.type === "switch") return v[0] === "1" ? "✓" : "";
   if (f.type === "rating" || f.type === "number") {
     const n = Number(v[0]);
@@ -136,8 +137,9 @@ interface EditProps {
 export function FieldEditor({ field, values, onCommit, autoOpen, onDismiss, pickAll, bookId, inCell }: EditProps) {
   const one = values[0] ?? "";
   const [draft, setDraft] = useState(one);
+  const [editingDate, setEditingDate] = useState(false);
   /* 日期是一次提交一次，记下上次交出去的值，失焦时不再重复提交同一个 */
-  const lastDay = useRef(one);
+  const lastDay = useRef(field.type === "date" ? toDate(one) : "");
 
   if (field.type === "longtext") {
     return (
@@ -152,6 +154,11 @@ export function FieldEditor({ field, values, onCommit, autoOpen, onDismiss, pick
     );
   }
   if (field.type === "date") {
+    const readingDate = field.patchKey === "readStart" || field.patchKey === "readDate";
+    if (readingDate && !inCell && !one && !editingDate) {
+      return <button type="button" className="mini" aria-label={"填写" + field.label} onClick={() => setEditingDate(true)}>-</button>;
+    }
+    const commitOnBlur = inCell || readingDate;
     const send = (v: string) => {
       lastDay.current = v;
       onCommit(v ? [v] : []);
@@ -159,10 +166,16 @@ export function FieldEditor({ field, values, onCommit, autoOpen, onDismiss, pick
     return (
       <input
         type="date"
+        autoFocus={autoOpen || editingDate}
         defaultValue={toDate(one)}
-        onChange={(e) => send(e.target.value)}
+        onChange={commitOnBlur ? undefined : (e) => send(e.target.value)}
+        onKeyDown={(e) => {
+          if (commitOnBlur && e.key === "Enter") e.currentTarget.blur();
+        }}
         onBlur={(e) => {
           if (e.target.value !== lastDay.current) send(e.target.value);
+          setEditingDate(false);
+          onDismiss?.();
         }}
       />
     );
@@ -171,6 +184,7 @@ export function FieldEditor({ field, values, onCommit, autoOpen, onDismiss, pick
     return (
       <input
         className={(inCell ? "tc-in " : "") + "num"}
+        autoFocus={autoOpen}
         type="number"
         step={field.type === "rating" ? "0.1" : "1"}
         min={field.type === "rating" ? "0" : undefined}
@@ -292,14 +306,18 @@ export function FieldCell({
   field,
   row,
   pickAll,
-  onPatch
+  onPatch,
+  editing,
+  onDismiss
 }: {
   field: FieldDef;
   row: BookRow;
   pickAll?: PickItem[];
   onPatch: (id: string, p: BookPatch) => void;
+  /** 当前活动格由表格统一管理，同一时间只开一个编辑器 */
+  editing: boolean;
+  onDismiss: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
   const values = valuesOf(field, row);
   const text = valuesText(field, row);
 
@@ -333,29 +351,29 @@ export function FieldCell({
     );
   }
 
-  const instant = field.type === "date";
-  if (!editing && !instant) {
+  if (!editing) {
     return (
       <span
-        className={"tc" + (text ? "" : " dim")}
+        className={"tc" + (values.length ? "" : " dim")}
         title={text || "点一下编辑"}
-        onClick={() => setEditing(true)}
       >
-        {text || "—"}
+        {field.patchKey === "categories" && values.length ? values.map((name) => (
+          <span key={name} className="mp-tag" style={categoryTagStyle(pickAll?.find((item) => item.name === name)?.color)}>{name}</span>
+        )) : text || "—"}
       </span>
     );
   }
   return (
-    <div className={instant ? "tc-date" : "tc-mp"}>
+    <div className={field.type === "date" ? "tc-date" : "tc-mp"}>
       <FieldEditor
         field={field}
         values={values}
         autoOpen
         inCell
         pickAll={pickAll}
-        onDismiss={() => setEditing(false)}
+        onDismiss={onDismiss}
         onCommit={(v) => {
-          setEditing(false);
+          onDismiss();
           onPatch(row.id, patchOf(field, v));
         }}
       />

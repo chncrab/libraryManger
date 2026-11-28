@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FacetItem, Facets, ViewUnit } from "../../shared/types";
+import CategoryTagDialog, { categoryTagStyle } from "./CategoryTagDialog";
 
 export interface FilterState {
   /** 临时媒介。视图预设了媒介时不用这一条 */
@@ -34,10 +35,12 @@ interface Props {
   unit?: ViewUnit;
   onChange: (patch: Partial<FilterState>) => void;
   onManageCats: () => void;
+  onCategoryChanged: () => void;
 }
 
-export default function Sidebar({ facets, filter, presetMedia = "", unit = "book", onChange, onManageCats }: Props) {
+export default function Sidebar({ facets, filter, presetMedia = "", unit = "book", onChange, onManageCats, onCategoryChanged }: Props) {
   const [serOpen, setSerOpen] = useState(false);
+  const [editingTag, setEditingTag] = useState<{ id: number; name: string; color?: string } | null>(null);
   if (!facets) return <aside className="side" />;
 
   /* 和 demo 一样：普通点击是单选替换，再点一次取消；Shift 点击是叠加 */
@@ -117,8 +120,13 @@ export default function Sidebar({ facets, filter, presetMedia = "", unit = "book
             (filter.categories.includes(c.name) ? " on" : "")
           }
           onClick={(e) => pick("categories", c.name, e)}
+          onContextMenu={(e) => {
+            if (typeof c.id !== "number") return;
+            e.preventDefault();
+            setEditingTag({ id: c.id, name: c.name, color: c.color });
+          }}
         >
-          {c.name}
+          <span className={c.color ? "mp-tag" : undefined} style={categoryTagStyle(c.color)}>{c.name}</span>
           <span className="n">{c.n}</span>
         </div>
       ))}
@@ -215,6 +223,7 @@ export default function Sidebar({ facets, filter, presetMedia = "", unit = "book
           ) : null}
         </>
       ) : null}
+      {editingTag ? <CategoryTagDialog tag={editingTag} mode="color" onClose={() => setEditingTag(null)} onSaved={onCategoryChanged} /> : null}
     </aside>
   );
 }

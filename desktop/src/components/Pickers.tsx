@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { categoryTagStyle } from "./CategoryTagDialog";
 
 export interface PickItem {
   id: number | string;
   name: string;
   parentId: number | null;
+  color?: string;
 }
 
 /** 点开面板，点面板以外的地方收起 */
@@ -104,7 +106,7 @@ export function MultiPick({
       <div className="mp-show" onClick={() => setOpen(!open)} title="点开选择">
         {picked.length ? (
           picked.map((p) => (
-            <span key={p} className="mp-tag">
+            <span key={p} className="mp-tag" data-pick-name={p} style={categoryTagStyle(all.find((item) => item.name === p)?.color)}>
               {p}
             </span>
           ))
@@ -119,14 +121,14 @@ export function MultiPick({
             <div key={r.id}>
               <div className="mp-g">{r.name}</div>
               {kidsOf(r.id).map((k) => (
-                <div key={k.id} className={"mp-i" + (picked.includes(k.name) ? " on" : "")} onClick={() => toggle(k.name)}>
+                <div key={k.id} data-pick-name={k.name} style={categoryTagStyle(k.color)} className={"mp-i" + (picked.includes(k.name) ? " on" : "")} onClick={() => toggle(k.name)}>
                   {k.name}
                 </div>
               ))}
             </div>
           ))}
           {orphan.map((k) => (
-            <div key={k.id} className={"mp-i" + (picked.includes(k.name) ? " on" : "")} onClick={() => toggle(k.name)}>
+            <div key={k.id} data-pick-name={k.name} style={categoryTagStyle(k.color)} className={"mp-i" + (picked.includes(k.name) ? " on" : "")} onClick={() => toggle(k.name)}>
               {k.name}
             </div>
           ))}

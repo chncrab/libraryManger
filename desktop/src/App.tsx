@@ -20,11 +20,14 @@ import SeriesPanel from "./components/SeriesPanel";
 import ViewTabs from "./components/ViewTabs";
 import ViewEditor from "./components/ViewEditor";
 import LibraryGate from "./components/LibraryGate";
+import NewBookDialog from "./components/NewBookDialog";
 import { copyText } from "./clip";
 import { loadJson, loadStr, saveJson, saveStr } from "./store";
 import { DEFAULT_HIDDEN, sortablesOf } from "./columns";
 import { EMPTY_ADV, EMPTY_VIEW_FILTER, FIXED_VIEW_ID } from "../shared/types";
 import { loadViews, saveViews } from "./viewBridge";
+import { FILTER_OPS, isActiveBookRule } from "../shared/filterRules";
+import type { NewBookInput } from "../shared/bookCreation";
 import type {
   AdvFilter,
   AppInfo,
@@ -95,6 +98,8 @@ export default function App() {
   const [views, setViews] = useState<LibraryView[]>([]);
   const [viewsLoaded, setViewsLoaded] = useState(false);
   const [viewId, setViewId] = useState(FIXED_VIEW_ID);
+  const [addBookOpen, setAddBookOpen] = useState(false);
+  const [firstIds, setFirstIds] = useState<string[]>([]);
 
   const [temps, setTemps] = useState<Record<string, TempState>>({});
 
@@ -235,6 +240,32 @@ export default function App() {
 
   /* 在书库的 reviews 文件夹里改了 md，主进程同步完会喊一声，界面这边重取 */
   useEffect(() => api.onReviewsChanged(() => setTick((t) => t + 1)), []);
+  useEffect(() => {
+    let active = true;
+    const off = api.onCategoryRenamed((before, after) => {
+      setTemps((prev) => Object.fromEntries(Object.entries(prev).map(([id, state]) => [
+        id,
+        {
+          ...state,
+          filter: {
+            ...state.filter,
+            categories: state.filter.categories.map((name) => name === before ? after : name)
+          },
+          adv: state.adv.group ? {
+            ...state.adv,
+            group: {
+              ...state.adv.group,
+              rules: state.adv.group.rules.map((rule) =>
+                rule.key === "categories" && rule.value === before ? { ...rule, value: after } : rule)
+            }
+          } : state.adv
+        }
+      ])));
+      void loadViews().then((r) => { if (active) putViews(r.views); });
+      setTick((t) => t + 1);
+    });
+    return () => { active = false; off(); };
+  }, [info?.libraryRoot, putViews]);
 
   /* 视图配置按库读一次。空列表就是用户删空了，不补预设 */
   useEffect(() => {
@@ -306,7 +337,7 @@ export default function App() {
 
   const presetKey = JSON.stringify(currentView.filter);
   const tempKey = JSON.stringify({ q: temp.qNow, filter: temp.filter, adv: temp.adv });
-  const bookKey = page + "|" + viewId + "|" + unit + "|" + presetKey + "|" + tempKey + "|" + JSON.stringify(sorts);
+  const bookKey = page + "|" + viewId + "|" + unit + "|" + presetKey + "|" + tempKey + "|" + JSON.stringify(sorts) + "|" + firstIds.join(",");
   const seriesKey = page + "|" + viewId + "|" + unit + "|" + presetKey + "|" + tempKey;
 
   /* 旧 key 的 rows/total 一律不画，避免切视图后的那一帧还挂着上一批书 */
@@ -329,6 +360,7 @@ export default function App() {
       decades: temp.filter.decades.length ? temp.filter.decades : undefined,
       seriesId: temp.filter.seriesId,
       sorts,
+      firstIds,
       adv: temp.adv,
       fvals: temp.adv.fvals || [],
       offset: offset || undefined,
@@ -481,6 +513,7 @@ export default function App() {
   const selectView = (id: string) => {
     setPage("library");
     setViewId(id);
+    setFirstIds([]);
     setSerPanel(null);
     setColOpen(false);
     setAdvOpen(false);
@@ -614,6 +647,22 @@ export default function App() {
   };
 
   const saveAndRefresh = () => bump();
+
+  const addBooks = async (input: NewBookInput) => {
+    const result = await api.createBooks(input);
+    if (!result.ok || !result.ids?.length) return result;
+    if (unit !== "book" || layout !== "table" || tempDirty || viewMedia ||
+        currentView.filter.categories.length || currentView.filter.keywords.length || currentView.filter.read !== "all") {
+      selectView(FIXED_VIEW_ID);
+      setTemps((prev) => ({ ...prev, [FIXED_VIEW_ID]: makeTemp() }));
+    }
+    setPicked([]);
+    setFirstIds(result.ids);
+    setAddBookOpen(false);
+    say("已新增 " + result.ids.length + " 本书");
+    bump();
+    return result;
+  };
 
   /* 表格里就地改字段走这条，落库后统一刷新，滚动位置由 keep 还原 */
   const patchBook = async (id: string, p: BookPatch) => {
@@ -875,11 +924,23 @@ export default function App() {
     });
   }
 
+  for (const [index, rule] of (temp.adv.group?.rules || []).entries()) {
+    if (!isActiveBookRule(rule)) continue;
+    chips.push({
+      key: "rule-" + index,
+      label: [fields.find((f) => f.key === rule.key)?.label || "出版年", FILTER_OPS[rule.op], rule.value].filter(Boolean).join(" "),
+      clear: () => {
+        const group = temp.adv.group;
+        if (group) setAdv({ ...temp.adv, group: { ...group, rules: group.rules.filter((_, i) => i !== index) } });
+      }
+    });
+  }
   const advCount =
     [temp.adv.ratingMin, temp.adv.ratingMax, temp.adv.yearFrom, temp.adv.yearTo].filter((x) => x != null).length +
     (temp.adv.hasReview === null ? 0 : 1) +
     (temp.adv.note.trim() ? 1 : 0) +
-    (temp.adv.fvals || []).length;
+    (temp.adv.fvals || []).length +
+    (temp.adv.group?.rules || []).filter(isActiveBookRule).length;
 
   const tempDirty =
     !!temp.q.trim() ||
@@ -931,6 +992,7 @@ export default function App() {
       unit={unit}
       onChange={patch}
       onManageCats={() => setCadmin(true)}
+      onCategoryChanged={bump}
     />
   );
 
@@ -949,20 +1011,25 @@ export default function App() {
       />
       <header className="topbar">
         {page === "library" ? (
-          <BookSearchInput
-            key="book-search"
-            ref={searchRef}
-            label={unit === "series" ? "搜索系列" : "搜索藏书"}
-            value={temp.q}
-            onChange={(q) => setTemp({ q })}
-            suggest={(field, prefix, remaining) => api.suggestBookField(
-              { ...(unit === "series" ? buildSeriesQuery() : buildBookQuery(0, PAGE)), q: remaining },
-              field,
-              prefix,
-              unit === "series"
-            )}
-            placeholder={unit === "series" ? "搜系列名、原名（@ 选字段）" : "搜书名、作者、原名（@ 选字段）"}
-          />
+          <div className="book-search-group">
+            <BookSearchInput
+              key="book-search"
+              ref={searchRef}
+              label={unit === "series" ? "搜索系列" : "搜索藏书"}
+              value={temp.q}
+              onChange={(q) => setTemp({ q })}
+              suggest={(field, prefix, remaining) => api.suggestBookField(
+                { ...(unit === "series" ? buildSeriesQuery() : buildBookQuery(0, PAGE)), q: remaining },
+                field,
+                prefix,
+                unit === "series"
+              )}
+              placeholder={unit === "series" ? "搜系列名、原名（@ 选字段）" : "搜书名、作者、原名（@ 选字段）"}
+            />
+            <button className="mini" onClick={clearTemp} disabled={!tempDirty} title="清空临时条件，回到视图预筛选">
+              清除条件
+            </button>
+          </div>
         ) : page === "review" ? (
           <input
             key="review-search"
@@ -988,7 +1055,12 @@ export default function App() {
         </button>
       </header>
 
-      <div className="body">
+      <div className="body" onMouseDownCapture={(e) => {
+        if (page !== "library" || !e.shiftKey || e.button !== 0 || !(e.target instanceof Element)) return;
+        if (e.target.closest("input, textarea, select, [contenteditable=true]")) return;
+        e.preventDefault();
+        window.getSelection()?.removeAllRanges();
+      }}>
         {page === "read" ? (
           <ReadView ver={tick} onPick={(id) => pickBook(id)} />
         ) : page === "review" ? (
@@ -1027,7 +1099,7 @@ export default function App() {
                     anchor(e);
                     setAdvOpen(!advOpen);
                   }}
-                  title="评分、出版年、有没有书评"
+                  title="按字段组合筛选条件"
                 >
                   高级筛选{advCount ? "（" + advCount + "）" : ""}
                 </button>
@@ -1044,16 +1116,12 @@ export default function App() {
                   ))}
                 </div>
                 <span className="spacer" />
-                {tempDirty ? (
-                  <button className="mini xs" onClick={clearTemp} title="清空临时条件，回到视图预筛选">
-                    清除临时条件
-                  </button>
-                ) : null}
+                <button className="mini xs" onClick={() => setAddBookOpen(true)}>新增书目</button>
                 {seriesLoading ? <span>读取中…</span> : null}
               </div>
 
               {advOpen ? (
-                <AdvPanel adv={temp.adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
+                <AdvPanel adv={temp.adv} fields={fields} categories={cats.map((c) => c.name)} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
               ) : null}
 
               <div className="scroll">
@@ -1076,7 +1144,7 @@ export default function App() {
                     已选 {picked.length} 本 ×
                   </span>
                 ) : null}
-                <SortBar sorts={sorts} onChange={setSorts} sortables={sortables} />
+                <SortBar sorts={sorts} onChange={(next) => { setFirstIds([]); setSorts(next); }} sortables={sortables} />
                 {layout === "table" ? (
                   <button
                     className={"mini xs" + (hidden.length ? " on" : "")}
@@ -1095,7 +1163,7 @@ export default function App() {
                     anchor(e);
                     setAdvOpen(!advOpen);
                   }}
-                  title="评分、出版年、有没有书评"
+                  title="按字段组合筛选条件"
                 >
                   高级筛选{advCount ? "（" + advCount + "）" : ""}
                 </button>
@@ -1112,11 +1180,7 @@ export default function App() {
                   ))}
                 </div>
                 <span className="spacer" />
-                {tempDirty ? (
-                  <button className="mini xs" onClick={clearTemp} title="清空临时条件，回到视图预筛选">
-                    清除临时条件
-                  </button>
-                ) : null}
+                <button className="mini xs" onClick={() => setAddBookOpen(true)}>新增书目</button>
                 {loading ? <span>读取中…</span> : null}
               </div>
 
@@ -1124,7 +1188,7 @@ export default function App() {
                 <ColumnPanel fields={fields} hidden={hidden} onChange={setHidden} onClose={() => setColOpen(false)} pos={panelPos} />
               ) : null}
               {advOpen ? (
-                <AdvPanel adv={temp.adv} fields={fields} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
+                <AdvPanel adv={temp.adv} fields={fields} categories={cats.map((c) => c.name)} onChange={setAdv} onClose={() => setAdvOpen(false)} pos={panelPos} />
               ) : null}
 
               <div className="scroll" ref={scrollRef} onScroll={onScroll}>
@@ -1137,7 +1201,7 @@ export default function App() {
                         rows={shownRows}
                         selected={picked}
                         fields={fields}
-                        cats={cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId }))}
+                        cats={cats}
                         hidden={hidden}
                         onSelect={pickBook}
                         onCtx={openCtx}
@@ -1186,7 +1250,8 @@ export default function App() {
         )}
       </div>
 
-      <DetailPanel id={selected} fields={fields} onClose={() => setPicked([])} onSaved={saveAndRefresh} />
+      <DetailPanel id={selected} fields={fields} cats={cats} onClose={() => setPicked([])} onSaved={saveAndRefresh} />
+      {addBookOpen ? <NewBookDialog onClose={() => setAddBookOpen(false)} loadOptions={api.newBookOptions} onCreate={addBooks} /> : null}
 
       {serPanel ? (
         <SeriesPanel

@@ -341,6 +341,9 @@ ALTER TABLE reviews ADD COLUMN file_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE orphan_reviews ADD COLUMN file_hash TEXT NOT NULL DEFAULT '';
 `;
 
+/* v12 分类带一个颜色，空串表示不设色，由界面按层级取默认色 */
+const V12 = `ALTER TABLE categories ADD COLUMN color TEXT NOT NULL DEFAULT '';`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "init", sql: V1 },
   { version: 2, name: "category_parent", sql: V2 },
@@ -353,5 +356,6 @@ export const MIGRATIONS: Migration[] = [
   { version: 8, name: "series_zh_name", sql: V8, after: (db) => rebuildAllFts(db) },
   { version: 9, name: "drop_cover_history", sql: V9 },
   { version: 10, name: "read_start", sql: V10 },
-  { version: 11, name: "review_file_hash", sql: V11 }
+  { version: 11, name: "review_file_hash", sql: V11 },
+  { version: 12, name: "category_color", sql: V12 }
 ];

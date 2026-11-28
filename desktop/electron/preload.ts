@@ -61,8 +61,16 @@ const api: BooklibApi = {
   restoreBook: (id: string) => ipcRenderer.invoke("books:restore", id),
   copyBook: (id: string) => ipcRenderer.invoke("books:copy", id),
   copyBooks: (ids: string[]) => ipcRenderer.invoke("books:copyMany", ids),
+  newBookOptions: () => ipcRenderer.invoke("books:newOptions"),
+  createBooks: (p) => ipcRenderer.invoke("books:create", p),
   categoryTree: () => ipcRenderer.invoke("cats:tree"),
-  createCategory: (name: string, parentId: number | null) => ipcRenderer.invoke("cats:create", name, parentId),
+  createCategory: (name, parentId, color) => ipcRenderer.invoke("cats:create", name, parentId, color),
+  setCategoryColor: (id, color) => ipcRenderer.invoke("cats:color", id, color),
+  onCategoryRenamed: (callback) => {
+    const fn = (_event: Electron.IpcRendererEvent, before: string, after: string) => callback(before, after);
+    ipcRenderer.on("cats:renamed", fn);
+    return () => ipcRenderer.removeListener("cats:renamed", fn);
+  },
   renameCategory: (id: number, name: string) => ipcRenderer.invoke("cats:rename", id, name),
   setCategoryParent: (id: number, parentId: number | null) => ipcRenderer.invoke("cats:parent", id, parentId),
   removeCategory: (id: number) => ipcRenderer.invoke("cats:remove", id),
